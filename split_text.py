@@ -35,55 +35,168 @@ CONTINUATION_NOTE = "هذا استكمال للتلخيص السابق؛ تاب�
 LAST_PART_NOTE = "هذا هو الجزء الأخير؛ اختم التلخيص بالخلاصة إن وُجدت."
 
 
+def read_file_with_fallback_encoding(file_path: Path) -> str:
+    """
+    قراءة الملف النصي مع محاولة استخدام عدة ترميزات شائعة.
+    يُجرب السكربت ترميز UTF-8 أولاً تماشياً مع المعايير الحديثة، ثم يرتد إلى
+    ترميز cp1256 العربي لبيئات Windows الشائعة لتفادي أخطاء فك الترميز.
+    """
+    encodings = ["utf-8", "utf-8-sig", "cp1256", "latin-1"]
+    for enc in encodings:
+        try:
+            return file_path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة.")
+
+
 def count_words(text: str) -> int:
     """عدّ كلمات النص."""
     return len(text.split())
 
 
+def split_long_line(line: str, max_words: int) -> list[str]:
+    """
+    تجزئة السطر الطويل جداً إلى أسطر فرعية دون تغيير أي حرف أو مسافة
+    لضمان تطابق الفهارس الكلي للنص الأصلي وحماية صحة مسافات الكلمات.
+    """
+    sub_segments = []
+    start = 0
+    # نجد المسافات التي تلي علامات الوقف مباشرة لتقسيم السطر بناءً عليها
+    for match in re.finditer(r'(?<=[.؟!?])\s+', line):
+        end = match.end()
+        sub_segments.append(line[start:end])
+        start = end
+    if start < len(line):
+        sub_segments.append(line[start:])
+
+    final_segments = []
+    for seg in sub_segments:
+        if count_words(seg) > max_words:
+            # إذا كانت الجملة الواحدة أطول من السعة، نقسمها كل max_words كلمة كخيار أخير
+            words_in_seg = seg.split()
+            seg_start = 0
+            word_count = 0
+            for match in re.finditer(r'\s+', seg):
+                word_count += 1
+                if word_count >= max_words:
+                    seg_end = match.end()
+                    final_segments.append(seg[seg_start:seg_end])
+                    seg_start = seg_end
+                    word_count = 0
+            if seg_start < len(seg):
+                final_segments.append(seg[seg_start:])
+        else:
+            final_segments.append(seg)
+
+    return final_segments
+
+
 def find_split_point(text: str, max_words: int) -> int:
     """
     إيجاد أفضل نقطة قطع في النص ضمن حد الكلمات.
-    يبحث عن أقرب حد طبيعي بهذا الترتيب:
-    1- عنوان فرعي (سطر يبدأ بـ # أو Tab)
-    2- فقرة (سطر فارغ مزدوج)
-    3- سطر فارغ مفرد
-    4- نهاية جملة (نقطة)
+    يبحث عن أقرب حد طبيعي بهذا الترتيب الحاكم:
+    1- عنوان فرعي (سطر يبدأ بـ # أو Tab في السطر التالي).
+    2- حد فقرة (سطر فارغ).
+    3- نهاية جملة (علامة وقف عربية أو إنجليزية في نهاية السطر).
+    4- نهاية سطر عادي (فصل السطور).
     """
     words = text.split()
     if len(words) <= max_words:
         return len(text)
 
-    # تقسيم النص إلى أسطر
-    lines = text.splitlines(keepends=True)
+    # تقسيم النص إلى أسطر مع الحفاظ على نهاياتها لعدم الإخلال بالمواقع
+    raw_lines = text.splitlines(keepends=True)
+    lines = []
+
+    # معالجة استباقية للسطور الضخمة (مثل ملفات السطر الواحد) لتفادي انهيار الفحص سطر بسطر
+    for line in raw_lines:
+        if count_words(line) > max_words:
+            lines.extend(split_long_line(line, max_words))
+        else:
+            lines.append(line)
+
     current_words = 0
     split_index = 0
-    best_split = -1
-    best_split_words = 0
+
+    # متغيرات لتتبع جودة نقاط القطع المرشحة وموقعها
+    best_heading_split = -1
+    heading_words = 0
+
+    best_paragraph_split = -1
+    paragraph_words = 0
+
+    best_sentence_split = -1
+    sentence_words = 0
+
+    best_line_split = -1
+    line_words_count = 0
+
+    # علامات الوقف الشائعة لنهاية الجمل
+    sentence_endings = ('.', '؟', '!', '?')
 
     for idx, line in enumerate(lines):
         line_words = count_words(line)
+        # نقف فوراً إذا كان السطر التالي يتجاوز الحد الأقصى المسموح به
         if current_words + line_words > max_words:
             break
 
         current_words += line_words
         split_index += len(line)
 
-        # التحقق من جودة النقطة الحالية للقطع
+        # 1. التحقق من وجود عنوان فرعي في السطر التالي (أعلى مستويات الفصل الدلالي)
         if idx < len(lines) - 1:
             next_line = lines[idx + 1]
-            # 1. عنوان فرعي
             if next_line.startswith('#') or next_line.startswith('\t'):
-                best_split = split_index
-                best_split_words = current_words
-            # 2. فقرة فارغة
-            elif line.strip() == '' or next_line.strip() == '':
-                if best_split == -1 or next_line.strip() == '':
-                    best_split = split_index
-                    best_split_words = current_words
+                best_heading_split = split_index
+                heading_words = current_words
+                continue
 
-    if best_split != -1 and best_split_words >= MIN_WORDS_FOR_NEW_PART:
-        return best_split
+        # 2. التحقق من حدود الفقرات (سطر فارغ يمثل فاصلاً طبيعياً بين الأفكار)
+        if line.strip() == '':
+            best_paragraph_split = split_index
+            paragraph_words = current_words
+            continue
+        if idx < len(lines) - 1 and lines[idx + 1].strip() == '':
+            best_paragraph_split = split_index
+            paragraph_words = current_words
+            continue
 
+        # 3. التحقق من نهاية الجملة (القطع عند نقطة أو استفهام يمنع بتر المعنى في السطور المتصلة)
+        # نُجرد الأقواس وعلامات الاقتباس الختامية الشائعة لعدم حجب علامة الوقف الأساسية
+        stripped_line = line.strip()
+        punctuation_check = stripped_line.rstrip(')"\'»]}`”’')
+        if punctuation_check and punctuation_check[-1] in sentence_endings:
+            best_sentence_split = split_index
+            sentence_words = current_words
+            continue
+
+        # 4. نهاية السطر (أضعف نقاط القطع المقبولة لتفادي بتر الكلمة الواحدة)
+        best_line_split = split_index
+        line_words_count = current_words
+
+    # نقوم باختيار النقطة الأعلى جودة التي تجاوزت الحد الأدنى لكي لا تتشظى الملفات
+    if best_heading_split != -1 and heading_words >= MIN_WORDS_FOR_NEW_PART:
+        return best_heading_split
+
+    if best_paragraph_split != -1 and paragraph_words >= MIN_WORDS_FOR_NEW_PART:
+        return best_paragraph_split
+
+    if best_sentence_split != -1 and sentence_words >= MIN_WORDS_FOR_NEW_PART:
+        return best_sentence_split
+
+    # إذا تعذر العثور على أي نقطة تستوفي الحد الأدنى، نتغاضى عن هذا الشرط
+    # ونختار أفضل نقطة قطع متوفرة تفادياً لعملية القطع العشوائي العنيف
+    if best_heading_split != -1:
+        return best_heading_split
+    if best_paragraph_split != -1:
+        return best_paragraph_split
+    if best_sentence_split != -1:
+        return best_sentence_split
+    if best_line_split != -1:
+        return best_line_split
+
+    # في حال استعصى وجود أي سطر مناسب (سطر واحد ضخم يتجاوز السعة)، نقطع عند حد الكلمات
     if current_words > 0:
         return split_index
 
@@ -92,7 +205,7 @@ def find_split_point(text: str, max_words: int) -> int:
 
 def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS):
     """تقسيم النص وحفظ الأجزاء."""
-    content = input_file.read_text(encoding="utf-8")
+    content = read_file_with_fallback_encoding(input_file)
     total_words = count_words(content)
 
     logger.info("حجم الملف الكلي: %d كلمة", total_words)
@@ -141,7 +254,7 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS):
 
         words_count = count_words(part)
         metadata_parts.append({
-            "file": str(part_path.absolute()),
+            "file": part_name,
             "words": words_count
         })
         logger.info("حفظ الجزء %d في: %s (%d كلمة)", current_part, part_name, words_count)
@@ -152,7 +265,7 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS):
         "parts_count": total_parts,
         "max_words_per_part": max_words,
         "parts": metadata_parts,
-        "merged_output": str((output_dir / "summary_final.md").absolute()),
+        "merged_output": "summary_final.md",
         "merged_words": 0
     }
 
