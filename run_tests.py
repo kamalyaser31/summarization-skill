@@ -433,6 +433,30 @@ def run_test_scenario():
             
         logger.info("  نجح اختبار التجميع الديناميكي والفرز الحسابي بنجاح باهر.")
 
+        # 4.ب اختبار تجميع الملخصات بنمط المجموع (Anthology Mode)
+        compile_anthology_cmd = [sys.executable, "compile_summaries.py", "-i", str(summaries_dir), "-a"]
+        logger.info("  تشغيل أمر التجميع بنمط المجموع: %s", " ".join(compile_anthology_cmd))
+        subprocess.run(compile_anthology_cmd, check=True)
+        
+        anthology_file = batch_src_dir / f"مجموع_رسائل_ومصنفات_{batch_src_dir.name}.md"
+        if not anthology_file.exists():
+            raise AssertionError(f"إخفاق: لم يتم إنشاء ملف التجميع الموسوعي الموحد: {anthology_file}")
+            
+        anthology_content = anthology_file.read_text(encoding="utf-8")
+        
+        # يجب أن يحتوي على البسملات لجميع الرسائل والترويسة الكلية (1 ترويسة + 3 رسائل = 4 بسملات)
+        anthology_bismillah_cnt = anthology_content.count("بسم الله الرحمن الرحيم.")
+        # يجب أن يحتوي على الفواصل البصرية بين الرسائل (3 رسائل يفصل بينها فاصلان)
+        divider_cnt = anthology_content.count("---")
+        
+        logger.info("  [نمط المجموع] عدد البسملات: %d، عدد الفواصل: %d", anthology_bismillah_cnt, divider_cnt)
+        if anthology_bismillah_cnt != 4:
+            raise AssertionError(f"إخفاق: عدد البسملات غير صحيح في نمط المجموع ({anthology_bismillah_cnt} بدلاً من 4)")
+        if divider_cnt != 2:
+            raise AssertionError(f"إخفاق: عدد الفواصل غير صحيح في نمط المجموع ({divider_cnt} بدلاً من 2)")
+            
+        logger.info("  نجح اختبار التجميع الموسوعي (Anthology Mode) بنجاح تام.")
+
         logger.info("=== نجحت جميع الاختبارات بنجاح تام! ===")
 
     except Exception as e:

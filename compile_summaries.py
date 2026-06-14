@@ -55,7 +55,7 @@ def smart_sort_key(file_path: Path):
     return (extract_numbers(file_path.name), file_path.name.lower())
 
 
-def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str = None) -> tuple[str, str, list[str]]:
+def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str = None, anthology: bool = False) -> tuple[str, str, list[str]]:
     """
     تحليل ملف التلخيص واستخلاص العناوين وتنظيف التكرار.
     يرجع: (العنوان_الرئيسي_المكتشف، عنوان_الفصل_المكتشف، خطوط_المحتوى_المنظفة)
@@ -96,18 +96,26 @@ def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str =
 
     # 3. تنظيف محتوى التلخيص
     cleaned_lines = []
+    has_kept_bismillah = False
+    has_kept_title = False
     for line in lines:
         stripped = line.strip()
         if not stripped:
             cleaned_lines.append(line)
             continue
 
-        # تخطي البسملة المكررة
+        # تخطي البسملة المكررة (مع إبقائها مرة واحدة في نمط المجموع في بداية الملف)
         if stripped == BISMILLAH:
+            if anthology and not has_kept_bismillah:
+                cleaned_lines.append(line)
+                has_kept_bismillah = True
             continue
 
-        # تخطي العنوان الرئيسي المكرر
+        # تخطي العنوان الرئيسي المكرر (مع إبقائه مرة واحدة في نمط المجموع في بداية الملف)
         if extracted_parent_title and (stripped == extracted_parent_title or stripped == extracted_parent_title + ":"):
+            if anthology and not has_kept_title:
+                cleaned_lines.append(line)
+                has_kept_title = True
             continue
 
         # تخطي السطر الذي يحتوي على عنوان الفصل فقط
@@ -123,7 +131,7 @@ def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str =
     return extracted_parent_title, chapter_title, cleaned_lines
 
 
-def compile_summaries(input_dir: Path, output_file_path: Path = None):
+def compile_summaries(input_dir: Path, output_file_path: Path = None, anthology: bool = False):
     """تجميع الملخصات وتنقيتها وكتابة الملف الموحد الكلي."""
     if not input_dir.exists() or not input_dir.is_dir():
         logger.error("مجلد المدخلات غير موجود أو ليس مجلداً: %s", input_dir)
@@ -147,15 +155,25 @@ def compile_summaries(input_dir: Path, output_file_path: Path = None):
     for idx, file_path in enumerate(summary_files):
         logger.info("معالجة وتصفية الملف: %s", file_path.name)
         is_first = (idx == 0)
-        parent_title, chapter_name, cleaned_lines = clean_and_parse_summary(file_path, is_first, parent_title)
+        parent_title, chapter_name, cleaned_lines = clean_and_parse_summary(file_path, is_first, parent_title, anthology)
 
         # إضافة اسم الفصل كعنوان فرعي مزاح بـ Tab ليتناسب مع هيكلية المهارة
-        chapters_content.append(f"\t{chapter_name}:")
+        if anthology:
+            if idx > 0:
+                chapters_content.append("---")
+                chapters_content.append("")
+        else:
+            chapters_content.append(f"\t{chapter_name}:")
+            
         chapters_content.extend(cleaned_lines)
         chapters_content.append("")  # سطر فارغ للفصل بين الفصول
 
     # بناء رأس التلخيص المجمع
-    final_title = parent_title if parent_title else "كتاب ملخصات مجمعة"
+    if anthology:
+        final_title = f"مجموع رسائل ومصنفات {input_dir.parent.name}"
+    else:
+        final_title = parent_title if parent_title else "كتاب ملخصات مجمعة"
+        
     compiled_parts = [
         BISMILLAH,
         f"{final_title}:",
@@ -193,12 +211,17 @@ def main():
         default=None,
         help="مسار ملف المخرج النهائي (الافتراضي: مستخلص تلقائياً في المجلد الأب)"
     )
+    parser.add_argument(
+        "-a", "--anthology",
+        action="store_true",
+        help="تفعيل نمط المجموع لدمج الرسائل المستقلة مع الحفاظ على بسملة وعنوان كل رسالة"
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input_dir)
     output_path = Path(args.output) if args.output else None
 
-    compile_summaries(input_path, output_path)
+    compile_summaries(input_path, output_path, args.anthology)
 
 
 if __name__ == "__main__":
