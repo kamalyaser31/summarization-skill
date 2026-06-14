@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def read_file_with_fallback_encoding(file_path: Path) -> str:
     قراءة الملف النصي مع محاولة استخدام عدة ترميزات شائعة.
     يُجرب السكربت ترميز UTF-8 أولاً تماشياً مع المعايير الحديثة، ثم يرتد إلى
     ترميز cp1256 العربي لبيئات Windows الشائعة لتفادي أخطاء فك الترميز.
+    وملاذاً أخيراً، يقرأ النص بترميز UTF-8 مع استبدال البايتات التالفة تفادياً للانهيار.
     """
     encodings = ["utf-8", "utf-8-sig", "cp1256", "latin-1"]
     for enc in encodings:
@@ -38,7 +40,11 @@ def read_file_with_fallback_encoding(file_path: Path) -> str:
             return file_path.read_text(encoding=enc)
         except UnicodeDecodeError:
             continue
-    raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة.")
+    try:
+        logger.warning("فشلت جميع الترميزات؛ سيتم قراءة الملف %s بترميز utf-8 مع استبدال البايتات التالفة.", file_path.name)
+        return file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة: {e}")
 
 
 def strip_prompt(text: str) -> str:
@@ -97,15 +103,80 @@ def find_summary_files(input_dir: Path) -> list[Path]:
     return []
 
 
+def clean_part_content(text: str, is_first: bool, main_title: str = None) -> tuple[str, str]:
+    """
+    تنظيف محتوى الجزء.
+    إذا كان الجزء الأول: يستخلص العنوان الرئيسي إن وجد.
+    إذا كان جزءاً تالياً: يزيل البسملة المكررة والعنوان الرئيسي المكرر من الصدارة.
+    """
+    # 1. إزالة البرومبت
+    text = strip_prompt(text).strip()
+    if not text:
+        return "", main_title
+
+    lines = text.splitlines()
+    non_empty_lines = [line.strip() for line in lines if line.strip()]
+
+    # تحديد البسملة القياسية
+    bismillah = "بسم الله الرحمن الرحيم."
+
+    extracted_title = main_title
+
+    if is_first:
+        # استخلاص العنوان الرئيسي من الجزء الأول
+        # قد تكون البسملة هي السطر الأول، والعنوان هو السطر الثاني
+        temp_title = None
+        if non_empty_lines:
+            if non_empty_lines[0] == bismillah:
+                if len(non_empty_lines) > 1:
+                    temp_title = non_empty_lines[1]
+            else:
+                temp_title = non_empty_lines[0]
+        
+        # نتحقق من أن العنوان يطابق نسق العناوين المتوقع (ينتهي بنقطتين أو يحتوي على شرح/كتاب)
+        if temp_title and (temp_title.endswith(":") or "شرح" in temp_title or "كتاب" in temp_title):
+            extracted_title = temp_title
+            logger.info("تم استخلاص العنوان الرئيسي للتلخيص: '%s'", extracted_title)
+        return text, extracted_title
+    else:
+        # تنظيف الأجزاء اللاحقة
+        changed = True
+        while changed and lines:
+            changed = False
+            first_line = lines[0].strip()
+            if not first_line:
+                lines.pop(0)
+                changed = True
+                continue
+            
+            # إزالة البسملة المكررة في الصدارة
+            if first_line == bismillah:
+                lines.pop(0)
+                changed = True
+                continue
+                
+            # إزالة العنوان الرئيسي المكرر
+            if extracted_title and (first_line == extracted_title or first_line == extracted_title.strip(":")):
+                lines.pop(0)
+                changed = True
+                continue
+                
+        return "\n".join(lines).strip(), extracted_title
+
+
 def merge_files(files: list[Path], strip_prompts: bool = True) -> str:
     """دمج محتويات الملفات في نص واحد."""
     parts = []
+    main_title = None
     for i, f in enumerate(files):
         logger.info("  قراءة الجزء %d: %s", i + 1, f.name)
         text = read_file_with_fallback_encoding(f)
 
         if strip_prompts:
-            text = strip_prompt(text)
+            is_first = (i == 0)
+            text, main_title = clean_part_content(text, is_first, main_title)
+        else:
+            text = text.strip()
 
         if text:
             parts.append(text)
@@ -113,45 +184,120 @@ def merge_files(files: list[Path], strip_prompts: bool = True) -> str:
     return "\n\n".join(parts)
 
 
+def process_single_dir(input_path: Path, output_path_str: str, strip_prompts: bool, clean: bool):
+    """دمج أجزاء ملف واحد وتحديث ميتاداته وتأمين حفظه."""
+    files = find_summary_files(input_path)
+    if not files:
+        logger.warning("لم يتم العثور على أجزاء للدمج في %s", input_path.name)
+        return
+
+    merged_text = merge_files(files, strip_prompts)
+    if not merged_text:
+        logger.warning("الملف المدمج الناتج فارغ: %s", input_path.name)
+        return
+
+    # تحديد مسار المخرج
+    if output_path_str:
+        output_file = Path(output_path_str)
+    else:
+        # المخرج الافتراضي داخل مجلد الأجزاء
+        output_file = input_path / "summary_final.md"
+        
+    # إذا تم تفعيل خيار clean وكان الملف المخرج يقع داخل مجلد الأجزاء المراد حذفه
+    # ننقله تلقائياً إلى المجلد الأب باسم متميز يمنع الحذف
+    if clean:
+        if output_file.parent == input_path or input_path in output_file.parents:
+            original_name = input_path.name.replace("_parts", "")
+            output_file = input_path.parent / f"{original_name}_summary.md"
+            logger.info("نظراً لتفعيل خيار التنظيف، تم نقل مسار الحفظ للمجلد الأب: %s", output_file.name)
+
+    # حفظ الملف
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(merged_text, encoding="utf-8")
+    logger.info("تم حفظ الملف المدمج في: %s", output_file.name)
+
+    # تحديث ميتادات الملف إن لم نكن سنحذفه
+    if not clean:
+        metadata_path = input_path / "metadata.json"
+        if metadata_path.exists():
+            try:
+                content = read_file_with_fallback_encoding(metadata_path)
+                metadata = json.loads(content)
+                metadata["merged_output"] = output_file.name
+                metadata["merged_words"] = len(merged_text.split())
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning("فشل تحديث ملف الميتادات: %s", e)
+    else:
+        # مسح مجلد الأجزاء
+        try:
+            shutil.rmtree(input_path)
+            logger.info("تم تنظيف وحذف مجلد الأجزاء المؤقت: %s", input_path.name)
+        except Exception as e:
+            logger.warning("فشل حذف مجلد الأجزاء %s: %s", input_path.name, e)
+
+
 def main():
     parser = argparse.ArgumentParser(description="دمج الأجزاء الملخصة في ملف واحد نهائي.")
-    parser.add_argument("input_dir", type=str, help="مجلد الأجزاء الملخصة")
-    parser.add_argument("-o", "--output", type=str, default=None, help="مسار ملف المخرج النهائي")
+    parser.add_argument("input_dir", type=str, help="مجلد الأجزاء الملخصة أو المجلد الجامع لها")
+    parser.add_argument("-o", "--output", type=str, default=None, help="مسار ملف أو مجلد المخرج النهائي")
     parser.add_argument("--keep-prompts", action="store_true", help="الإبقاء على تعليمات الـ Prompt دون حذفها")
+    parser.add_argument("-c", "--clean", action="store_true", help="مسح مجلد الأجزاء بعد نجاح الدمج لتوفير المساحة")
     args = parser.parse_args()
 
     input_path = Path(args.input_dir)
     if not input_path.exists() or not input_path.is_dir():
-        logger.error("المجلد غير موجود: %s", args.input_dir)
+        logger.error("المسار غير موجود أو ليس مجلداً: %s", args.input_dir)
         sys.exit(1)
 
-    files = find_summary_files(input_path)
-    if not files:
-        logger.error("لم يتم العثور على ملفات تلخيص مرقمة بنمط *_part_NN_summary.md أو *_part_NN.md في المجلد.")
-        sys.exit(1)
+    # التحقق مما إذا كان المجلد المعطى يمثل مجلداً مفرداً للأجزاء
+    is_single = (input_path / "metadata.json").exists()
 
-    logger.info("تم العثور على %d ملفات للدمج.", len(files))
-    merged_text = merge_files(files, not args.keep_prompts)
+    if is_single:
+        logger.info("معالجة مجلد أجزاء مفرد: %s", input_path.name)
+        process_single_dir(input_path, args.output, not args.keep_prompts, args.clean)
+    else:
+        # البحث عن ملفات metadata.json في المجلدات الفرعية
+        metadata_files = list(input_path.glob("**/metadata.json"))
+        if not metadata_files:
+            logger.error("لم يتم العثور على أي ملفات ميتادات (metadata.json) صالحة داخل المجلد.")
+            sys.exit(1)
 
-    output_file = Path(args.output) if args.output else input_path / "summary_final.md"
+        logger.info("تم الكشف عن مجلد دفعي. وجدنا %d ملفات ميتادات صالحة للدمج والتنظيف.", len(metadata_files))
+        
+        # ترتيب الملفات لضمان دمج الفصول بالتسلسل الصحيح
+        metadata_files.sort()
 
-    output_file.write_text(merged_text, encoding="utf-8")
-    logger.info("تم حفظ الملف المدمج النهائي في: %s", output_file)
+        for idx, meta_file in enumerate(metadata_files):
+            parts_dir = meta_file.parent
+            rel_parts_dir = parts_dir.relative_to(input_path)
+            
+            # تحديد اسم ووجهة مخرج التلخيص
+            original_stem = parts_dir.name.replace("_parts", "")
+            
+            if input_path.name == "all_parts":
+                parent_dir = input_path.parent
+            else:
+                parent_dir = input_path
+                
+            dest_folder = parent_dir / "summaries"
+            if rel_parts_dir.parent != Path("."):
+                dest_file = dest_folder / rel_parts_dir.parent / f"{original_stem}.md"
+            else:
+                dest_file = dest_folder / f"{original_stem}.md"
 
-    # تحديث ملف الميتادات إن وجد
-    metadata_path = input_path / "metadata.json"
-    if metadata_path.exists():
-        try:
-            content = read_file_with_fallback_encoding(metadata_path)
-            metadata = json.loads(content)
-            # نجعله نسبياً بالنسبة للمجلد لتسهيل النقل والمنقولية
-            metadata["merged_output"] = output_file.name
-            metadata["merged_words"] = len(merged_text.split())
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-            logger.info("تم تحديث ملف الميتادات بنجاح.")
-        except Exception as e:
-            logger.warning("فشل تحديث ملف الميتادات: %s", e)
+            logger.info("[%d/%d] دمج أجزاء: %s -> %s", idx + 1, len(metadata_files), rel_parts_dir, dest_file.relative_to(parent_dir))
+            process_single_dir(parts_dir, str(dest_file), not args.keep_prompts, args.clean)
+
+        # إذا تم تفعيل خيار الحذف، نمسح مجلد all_parts بالكامل إذا فرغ
+        if args.clean:
+            try:
+                if input_path.exists() and input_path.name == "all_parts":
+                    shutil.rmtree(input_path)
+                    logger.info("تم مسح وتنظيف المجلد الجامع all_parts بالكامل.")
+            except Exception as e:
+                logger.warning("فشل حذف المجلد الجامع: %s", e)
 
 
 if __name__ == "__main__":

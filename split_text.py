@@ -40,6 +40,7 @@ def read_file_with_fallback_encoding(file_path: Path) -> str:
     قراءة الملف النصي مع محاولة استخدام عدة ترميزات شائعة.
     يُجرب السكربت ترميز UTF-8 أولاً تماشياً مع المعايير الحديثة، ثم يرتد إلى
     ترميز cp1256 العربي لبيئات Windows الشائعة لتفادي أخطاء فك الترميز.
+    وملاذاً أخيراً، يقرأ النص بترميز UTF-8 مع استبدال البايتات التالفة تفادياً للانهيار.
     """
     encodings = ["utf-8", "utf-8-sig", "cp1256", "latin-1"]
     for enc in encodings:
@@ -47,7 +48,11 @@ def read_file_with_fallback_encoding(file_path: Path) -> str:
             return file_path.read_text(encoding=enc)
         except UnicodeDecodeError:
             continue
-    raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة.")
+    try:
+        logger.warning("فشلت جميع الترميزات؛ سيتم قراءة الملف %s بترميز utf-8 مع استبدال البايتات التالفة.", file_path.name)
+        return file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة: {e}")
 
 
 def count_words(text: str) -> int:
@@ -100,6 +105,8 @@ def find_split_point(text: str, max_words: int) -> int:
     2- حد فقرة (سطر فارغ).
     3- نهاية جملة (علامة وقف عربية أو إنجليزية في نهاية السطر).
     4- نهاية سطر عادي (فصل السطور).
+
+    تحسين هيكلي: يتجنب القطع تماماً داخل الكتل البرمجية (Code Blocks) والجداول (Tables).
     """
     words = text.split()
     if len(words) <= max_words:
@@ -135,14 +142,27 @@ def find_split_point(text: str, max_words: int) -> int:
     # علامات الوقف الشائعة لنهاية الجمل
     sentence_endings = ('.', '؟', '!', '?')
 
+    inside_code_block = False
+
     for idx, line in enumerate(lines):
         line_words = count_words(line)
         # نقف فوراً إذا كان السطر التالي يتجاوز الحد الأقصى المسموح به
         if current_words + line_words > max_words:
             break
 
+        # التحقق من بداية أو نهاية كتلة برمجية
+        if re.match(r'^\s*(```|~~~)', line):
+            inside_code_block = not inside_code_block
+
+        # التحقق من كونه سطراً من جدول
+        inside_table = line.strip().startswith('|')
+
         current_words += line_words
         split_index += len(line)
+
+        # إذا كنا داخل كتلة برمجية أو جدول، نتجنب تسجيل أي نقطة قطع
+        if inside_code_block or inside_table:
+            continue
 
         # 1. التحقق من وجود عنوان فرعي في السطر التالي (أعلى مستويات الفصل الدلالي)
         if idx < len(lines) - 1:
@@ -167,13 +187,21 @@ def find_split_point(text: str, max_words: int) -> int:
         stripped_line = line.strip()
         punctuation_check = stripped_line.rstrip(')"\'»]}`”’')
         if punctuation_check and punctuation_check[-1] in sentence_endings:
-            best_sentence_split = split_index
-            sentence_words = current_words
-            continue
+            # نتأكد أن السطر التالي لا يمثل استمراراً لجدول
+            if idx < len(lines) - 1 and lines[idx + 1].strip().startswith('|'):
+                pass
+            else:
+                best_sentence_split = split_index
+                sentence_words = current_words
+                continue
 
         # 4. نهاية السطر (أضعف نقاط القطع المقبولة لتفادي بتر الكلمة الواحدة)
-        best_line_split = split_index
-        line_words_count = current_words
+        # نتأكد أن السطر التالي ليس جزءاً من جدول
+        if idx < len(lines) - 1 and lines[idx + 1].strip().startswith('|'):
+            pass
+        else:
+            best_line_split = split_index
+            line_words_count = current_words
 
     # نقوم باختيار النقطة الأعلى جودة التي تجاوزت الحد الأدنى لكي لا تتشظى الملفات
     if best_heading_split != -1 and heading_words >= MIN_WORDS_FOR_NEW_PART:
@@ -203,12 +231,32 @@ def find_split_point(text: str, max_words: int) -> int:
     return len(text)
 
 
-def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS):
+def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, force: bool = False):
     """تقسيم النص وحفظ الأجزاء."""
     content = read_file_with_fallback_encoding(input_file)
     total_words = count_words(content)
 
     logger.info("حجم الملف الكلي: %d كلمة", total_words)
+
+    # التحقق من وجود الأجزاء مسبقاً وصحة الملف الأصلي (Part-level Checkpointing)
+    if not force:
+        metadata_path = output_dir / "metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                if metadata.get("total_words") == total_words:
+                    all_parts_exist = True
+                    for part_info in metadata.get("parts", []):
+                        part_file = output_dir / part_info["file"]
+                        if not part_file.exists():
+                            all_parts_exist = False
+                            break
+                    if all_parts_exist:
+                        logger.info("ألفينا أجزاء الملف «%s» منشأة مسبقاً والأصل لم يطرأ عليه تغيير، فتقرر تجاوز إعادة التقسيم.", input_file.name)
+                        return
+            except Exception as e:
+                logger.warning("فشل التحقق من ملف الميتادات للاستئناف: %s", e)
 
     if total_words <= max_words:
         logger.info("الملف ضمن السعة الفعالة، لن يتم تقسيمه.")
@@ -277,23 +325,69 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS):
 
 def main():
     parser = argparse.ArgumentParser(description="تقسيم النصوص الطويلة لمهارة التلخيص.")
-    parser.add_argument("input", type=str, help="مسار الملف النصي المراد تقسيمه (.txt أو .md)")
+    parser.add_argument("input", type=str, help="مسار الملف النصي أو المجلد المراد تقسيمه")
     parser.add_argument("-o", "--output", type=str, default=None, help="مجلد المخرجات")
     parser.add_argument("--max-words", type=int, default=MAX_WORDS, help="الحد الأقصى للكلمات في الجزء الواحد")
+    parser.add_argument("-r", "--recursive", action="store_true", help="البحث التراجعي في المجلدات الفرعية عند إدخال مجلد")
+    parser.add_argument("-f", "--force", action="store_true", help="إجبار السكربت على إعادة المعالجة وتخطي فحوص الاستئناف والتحقق")
     args = parser.parse_args()
 
     input_path = Path(args.input)
     if not input_path.exists():
-        logger.error("الملف غير موجود: %s", args.input)
+        logger.error("المسار غير موجود: %s", args.input)
         sys.exit(1)
 
-    # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد بجانب الملف الأصلي باسم <اسم_الملف>_parts
-    if args.output is None:
-        output_dir = input_path.parent / f"{input_path.stem}_parts"
-    else:
-        output_dir = Path(args.output)
+    if input_path.is_dir():
+        logger.info("تم الكشف عن مجلد كمدخل: %s. الشروع في الفرز والتقسيم الدفعي...", input_path.name)
+        
+        # فرز الملفات
+        pattern = "**/*" if args.recursive else "*"
+        all_files = []
+        for p in input_path.glob(pattern):
+            if p.is_file() and p.suffix.lower() in [".txt", ".md"]:
+                # استثناء مجلدات الأجزاء ومجلد المخرجات summaries
+                parts = p.parts
+                if "all_parts" in parts or "summaries" in parts or any(part.endswith("_parts") for part in parts):
+                    continue
+                all_files.append(p)
+                
+        logger.info("تم العثور على %d ملفات نصية صالحة للتقسيم.", len(all_files))
+        
+        # التقسيم التتابعي
+        for i, file_path in enumerate(all_files):
+            rel_path = file_path.relative_to(input_path)
+            
+            # فحص الاستئناف على مستوى الملف (File-level Resume Check)
+            if not args.force:
+                summary_dir = input_path / "summaries"
+                if rel_path.parent != Path("."):
+                    summary_file = summary_dir / rel_path.parent / f"{file_path.stem}.md"
+                else:
+                    summary_file = summary_dir / f"{file_path.stem}.md"
+                
+                if summary_file.exists() and summary_file.stat().st_mtime >= file_path.stat().st_mtime:
+                    logger.info("وجدنا الملخص النهائي للملف «%s» قائماً وهو أحدث من أصله، فتقرر تجاوزه صوناً للوقت.", rel_path)
+                    continue
 
-    split_text(input_path, output_dir, args.max_words)
+            # تحديد مجلد الأجزاء في المجلد الجامع all_parts محاكياً الهيكل الشجري
+            parts_dir_name = f"{file_path.stem}_parts"
+            if rel_path.parent != Path("."):
+                dest_dir = input_path / "all_parts" / rel_path.parent / parts_dir_name
+            else:
+                dest_dir = input_path / "all_parts" / parts_dir_name
+                
+            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, dest_dir.relative_to(input_path))
+            split_text(file_path, dest_dir, args.max_words, force=args.force)
+            
+        logger.info("=== اكتمل التقسيم الدفعي للمجلد بنجاح! ===")
+    else:
+        # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد بجانب الملف الأصلي باسم <اسم_الملف>_parts
+        if args.output is None:
+            output_dir = input_path.parent / f"{input_path.stem}_parts"
+        else:
+            output_dir = Path(args.output)
+
+        split_text(input_path, output_dir, args.max_words, force=args.force)
 
 
 if __name__ == "__main__":
