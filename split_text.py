@@ -371,32 +371,19 @@ def main():
 
             # تحديد مجلد الأجزاء في المجلد الجامع all_parts محاكياً الهيكل الشجري
             parts_dir_name = f"{file_path.stem}_parts"
-            if "test_run_temp" in str(input_path.absolute()):
-                if rel_path.parent != Path("."):
-                    dest_dir = input_path / "all_parts" / rel_path.parent / parts_dir_name
-                else:
-                    dest_dir = input_path / "all_parts" / parts_dir_name
+            if rel_path.parent != Path("."):
+                dest_dir = Path(__file__).parent / "all_parts" / rel_path.parent / parts_dir_name
             else:
-                if rel_path.parent != Path("."):
-                    dest_dir = Path(__file__).parent / "all_parts" / rel_path.parent / parts_dir_name
-                else:
-                    dest_dir = Path(__file__).parent / "all_parts" / parts_dir_name
+                dest_dir = Path(__file__).parent / "all_parts" / parts_dir_name
                 
-            try:
-                rel_dest = dest_dir.relative_to(Path(__file__).parent)
-            except ValueError:
-                rel_dest = dest_dir
-            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, rel_dest)
+            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, dest_dir.relative_to(Path(__file__).parent))
             split_text(file_path, dest_dir, args.max_words, force=args.force)
             
         logger.info("=== اكتمل التقسيم الدفعي للمجلد بنجاح! ===")
     else:
-        # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد الأجزاء
+        # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد الأجزاء في مجلد المهارة
         if args.output is None:
-            if "test_run_temp" in str(input_path.absolute()):
-                output_dir = input_path.parent / f"{input_path.stem}_parts"
-            else:
-                output_dir = Path(__file__).parent / "all_parts" / f"{input_path.stem}_parts"
+            output_dir = Path(__file__).parent / "all_parts" / f"{input_path.stem}_parts"
         else:
             output_dir = Path(args.output)
 
