@@ -66,11 +66,23 @@ class TestSummarizationSkill(unittest.TestCase):
         if self.test_workspace.exists():
             shutil.rmtree(self.test_workspace)
             
-        # إزالة المجلدات المشتركة الناتجة عن الاختبارات
+        # إزالة المجلدات المشتركة الناتجة عن الاختبارات بطريقة آمنة
         for folder in ["all_parts", "summaries"]:
             folder_path = BASE_DIR / folder
             if folder_path.exists():
-                shutil.rmtree(folder_path)
+                try:
+                    shutil.rmtree(folder_path)
+                except (PermissionError, OSError):
+                    # في حال تعذر الحذف لوجود ملفات مستخدم أو أقفال، ننظف ملفات الفحص فقط
+                    for item in folder_path.iterdir():
+                        if any(x in item.name for x in ["sample_text", "dummy", "large_book", "cli_"]):
+                            try:
+                                if item.is_dir():
+                                    shutil.rmtree(item)
+                                else:
+                                    item.unlink()
+                            except Exception:
+                                pass
                 
         # مسح أي ملفات مدمجة ناتجة في مساحة العمل
         for file in BASE_DIR.glob("*.md"):
