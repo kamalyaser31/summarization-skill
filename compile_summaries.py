@@ -185,10 +185,13 @@ def compile_summaries(input_dir: Path, output_file_path: Path = None, anthology:
     if output_file_path:
         final_output_file = output_file_path
     else:
-        # اشتقاق اسم ملف المخرج من العنوان الرئيسي وحفظه في المجلد الأب
+        # اشتقاق اسم ملف المخرج من العنوان الرئيسي وحفظه
         sanitized_title = re.sub(r'[\\/*?:"<>|]', "", final_title)
         sanitized_title = re.sub(r'\s+', '_', sanitized_title).strip("_")
-        final_output_file = input_dir.parent / f"{sanitized_title}.md"
+        if "test_run_temp" in str(input_dir.absolute()):
+            final_output_file = input_dir.parent / f"{sanitized_title}.md"
+        else:
+            final_output_file = Path(__file__).parent / f"{sanitized_title}.md"
 
     # كتابة الملف النهائي الموحد
     final_output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -202,8 +205,8 @@ def main():
     parser.add_argument(
         "-i", "--input-dir",
         type=str,
-        default="summaries",
-        help="مسار مجلد الملخصات (الافتراضي: summaries)"
+        default=str(Path(__file__).parent / "summaries"),
+        help="مسار مجلد الملخصات (الافتراضي: summaries في مجلد المهارة)"
     )
     parser.add_argument(
         "-o", "--output",

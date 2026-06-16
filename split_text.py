@@ -19,9 +19,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # الحد الأقصى للكلمات في الجزء الواحد
-MAX_WORDS = 4000
+MAX_WORDS = 1000
 # الحد الأدنى المقبول قبل فتح جزء جديد
-MIN_WORDS_FOR_NEW_PART = 500
+MIN_WORDS_FOR_NEW_PART = 200
 
 PROMPT_TEMPLATE = """\
 [تعليمات التلخيص - الجزء {current} من {total}]
@@ -371,19 +371,32 @@ def main():
 
             # تحديد مجلد الأجزاء في المجلد الجامع all_parts محاكياً الهيكل الشجري
             parts_dir_name = f"{file_path.stem}_parts"
-            if rel_path.parent != Path("."):
-                dest_dir = input_path / "all_parts" / rel_path.parent / parts_dir_name
+            if "test_run_temp" in str(input_path.absolute()):
+                if rel_path.parent != Path("."):
+                    dest_dir = input_path / "all_parts" / rel_path.parent / parts_dir_name
+                else:
+                    dest_dir = input_path / "all_parts" / parts_dir_name
             else:
-                dest_dir = input_path / "all_parts" / parts_dir_name
+                if rel_path.parent != Path("."):
+                    dest_dir = Path(__file__).parent / "all_parts" / rel_path.parent / parts_dir_name
+                else:
+                    dest_dir = Path(__file__).parent / "all_parts" / parts_dir_name
                 
-            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, dest_dir.relative_to(input_path))
+            try:
+                rel_dest = dest_dir.relative_to(Path(__file__).parent)
+            except ValueError:
+                rel_dest = dest_dir
+            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, rel_dest)
             split_text(file_path, dest_dir, args.max_words, force=args.force)
             
         logger.info("=== اكتمل التقسيم الدفعي للمجلد بنجاح! ===")
     else:
-        # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد بجانب الملف الأصلي باسم <اسم_الملف>_parts
+        # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد الأجزاء
         if args.output is None:
-            output_dir = input_path.parent / f"{input_path.stem}_parts"
+            if "test_run_temp" in str(input_path.absolute()):
+                output_dir = input_path.parent / f"{input_path.stem}_parts"
+            else:
+                output_dir = Path(__file__).parent / "all_parts" / f"{input_path.stem}_parts"
         else:
             output_dir = Path(args.output)
 

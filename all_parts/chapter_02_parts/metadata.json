@@ -1,0 +1,14 @@
+{
+  "source": "E:\\GitHub\\summarization_skill\\test_run_temp\\batch_src\\chapter_02.txt",
+  "total_words": 14,
+  "parts_count": 1,
+  "max_words_per_part": 20,
+  "parts": [
+    {
+      "file": "chapter_02_part_01.md",
+      "words": 14
+    }
+  ],
+  "merged_output": "summary_final.md",
+  "merged_words": 0
+}

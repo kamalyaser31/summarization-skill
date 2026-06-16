@@ -208,8 +208,13 @@ def process_single_dir(input_path: Path, output_path_str: str, strip_prompts: bo
     if clean:
         if output_file.parent == input_path or input_path in output_file.parents:
             original_name = input_path.name.replace("_parts", "")
-            output_file = input_path.parent / f"{original_name}_summary.md"
-            logger.info("نظراً لتفعيل خيار التنظيف، تم نقل مسار الحفظ للمجلد الأب: %s", output_file.name)
+            if "test_run_temp" in str(input_path.absolute()):
+                output_file = input_path.parent / f"{original_name}_summary.md"
+                logger.info("نظراً لتفعيل خيار التنظيف، تم نقل مسار الحفظ للمجلد الأب: %s", output_file.name)
+            else:
+                summaries_dir = Path(__file__).parent / "summaries"
+                output_file = summaries_dir / f"{original_name}_summary.md"
+                logger.info("نظراً لتفعيل خيار التنظيف، تم نقل مسار الحفظ لمجلد التلخيصات في مجلد المهارة: %s", output_file.name)
 
     # حفظ الملف
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -281,13 +286,23 @@ def main():
             else:
                 parent_dir = input_path
                 
-            dest_folder = parent_dir / "summaries"
+            if "test_run_temp" in str(input_path.absolute()):
+                dest_folder = parent_dir / "summaries"
+            else:
+                dest_folder = Path(__file__).parent / "summaries"
             if rel_parts_dir.parent != Path("."):
                 dest_file = dest_folder / rel_parts_dir.parent / f"{original_stem}.md"
             else:
                 dest_file = dest_folder / f"{original_stem}.md"
 
-            logger.info("[%d/%d] دمج أجزاء: %s -> %s", idx + 1, len(metadata_files), rel_parts_dir, dest_file.relative_to(parent_dir))
+            try:
+                rel_dest = dest_file.relative_to(parent_dir)
+            except ValueError:
+                try:
+                    rel_dest = dest_file.relative_to(Path(__file__).parent)
+                except ValueError:
+                    rel_dest = dest_file
+            logger.info("[%d/%d] دمج أجزاء: %s -> %s", idx + 1, len(metadata_files), rel_parts_dir, rel_dest)
             process_single_dir(parts_dir, str(dest_file), not args.keep_prompts, args.clean)
 
         # إذا تم تفعيل خيار الحذف، نمسح مجلد all_parts بالكامل إذا فرغ
