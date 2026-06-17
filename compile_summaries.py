@@ -8,12 +8,13 @@
 """
 
 import argparse
-import json
 import logging
 import re
 import shutil
 import sys
 from pathlib import Path
+
+from utils import read_file_with_fallback_encoding
 
 # إعداد السجل تماشياً مع المعايير القياسية للمشروع
 logging.basicConfig(
@@ -25,35 +26,17 @@ logger = logging.getLogger(__name__)
 
 # الثوابت القياسية
 BISMILLAH = "بسم الله الرحمن الرحيم."
-PROMPT_PATTERN = re.compile(r'\A\[تعليمات التلخيص.*?\]\s*.*?---\s*', re.DOTALL)
+# مقيَّد بـ \A لضمان المطابقة من بداية النص فحسب؛ و MULTILINE لمطابقة سطر --- المستقل بدقة
+PROMPT_PATTERN = re.compile(
+    r'\A\[تعليمات التلخيص[^\]]*\].*?^---[ \t]*\n?',
+    re.DOTALL | re.MULTILINE
+)
 CHAPTER_TITLE_PATTERN = re.compile(
     r"\((الفصل\s+[^\)]+|الباب\s+[^\)]+|الجزء\s+[^\)]+|المبحث\s+[^\)]+)\)",
     re.IGNORECASE
 )
 
 
-# ==========================================
-# أولاً: الدوال المشتركة وقراءة الملفات
-# ==========================================
-
-def read_file_with_fallback_encoding(file_path: Path) -> str:
-    """قراءة الملف النصي مع محاولة استخدام ترميزات متعددة تفادياً للانهيار."""
-    encodings = ["utf-8", "utf-8-sig", "cp1256", "latin-1"]
-    for enc in encodings:
-        try:
-            return file_path.read_text(encoding=enc)
-        except UnicodeDecodeError:
-            continue
-    try:
-        logger.warning("فشلت جميع الترميزات؛ سيتم قراءة الملف %s بترميز utf-8 مع استبدال البايتات التالفة.", file_path.name)
-        return file_path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة: {e}")
-
-
-# ==========================================
-# ثانياً: منطق دمج الأجزاء (Merge Mode)
-# ==========================================
 
 def strip_prompt(text: str) -> str:
     """حذف تعليمات التلخيص (Prompt) من بداية النص."""
@@ -189,19 +172,6 @@ def process_single_dir(input_path: Path, output_path_str: str, strip_prompts: bo
     output_file.write_text(merged_text, encoding="utf-8")
     logger.info("تم حفظ الملف المدمج في: %s", output_file.name)
 
-    # تحديث ملف الميتادات
-    metadata_path = input_path / "metadata.json"
-    if metadata_path.exists() and not clean:
-        try:
-            content = read_file_with_fallback_encoding(metadata_path)
-            metadata = json.loads(content)
-            metadata["merged_output"] = output_file.name
-            metadata["merged_words"] = len(merged_text.split())
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning("فشل تحديث ملف الميتادات: %s", e)
-
     # مسح مجلد الأجزاء المؤقت
     if clean:
         try:
@@ -230,25 +200,22 @@ def process_batch_merge(input_path: Path, output_path_str: str, strip_prompts: b
         # تحديد وجهة الحفظ في مجلد summaries بمجلد المهارة
         dest_folder = Path(__file__).parent / "summaries"
         if rel_parts_dir.parent != Path("."):
-            dest_file = dest_folder / rel_parts_dir.parent / f"{original_stem}.md"
+            dest_file = dest_folder / rel_parts_dir.parent / f"{original_stem}_summary.md"
         else:
-            dest_file = dest_folder / f"{original_stem}.md"
+            dest_file = dest_folder / f"{original_stem}_summary.md"
 
         logger.info("[%d/%d] دمج أجزاء: %s -> %s", idx + 1, len(metadata_files), rel_parts_dir, dest_file.name)
         process_single_dir(parts_dir, str(dest_file), strip_prompts, clean)
 
     if clean:
         try:
-            if input_path.exists() and input_path.name == "all_parts":
+            # لا نُقيِّد الحذف باسم المجلد لأن المستخدم قد يمرر أي مسار جامع
+            if input_path.exists():
                 shutil.rmtree(input_path)
-                logger.info("تم مسح وتنظيف المجلد الجامع all_parts بالكامل.")
+                logger.info("تم مسح وتنظيف المجلد الجامع «%s» بالكامل.", input_path.name)
         except Exception as e:
             logger.warning("فشل حذف المجلد الجامع: %s", e)
 
-
-# ==========================================
-# ثالثاً: منطق تجميع الفصول (Compile Mode)
-# ==========================================
 
 def extract_numbers(filename: str) -> list[int]:
     """استخلاص الأرقام من اسم الملف للمقارنة الحسابية الصحيحة."""
@@ -297,6 +264,7 @@ def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str =
 
     # 3. تنظيف محتوى التلخيص
     cleaned_lines = []
+    # يُستخدم في نمط المجموع فحسب، لتتبع أول بسملة/عنوان تم الاحتفاظ بهما داخل كل ملف
     has_kept_bismillah = False
     has_kept_title = False
     for line in lines:
@@ -306,15 +274,17 @@ def clean_and_parse_summary(file_path: Path, is_first: bool, parent_title: str =
             continue
 
         if stripped == BISMILLAH:
-            if anthology and not has_kept_bismillah:
-                cleaned_lines.append(line)
-                has_kept_bismillah = True
+            if anthology:
+                if not has_kept_bismillah:
+                    cleaned_lines.append(line)
+                    has_kept_bismillah = True
             continue
 
         if extracted_parent_title and (stripped == extracted_parent_title or stripped == extracted_parent_title + ":"):
-            if anthology and not has_kept_title:
-                cleaned_lines.append(line)
-                has_kept_title = True
+            if anthology:
+                if not has_kept_title:
+                    cleaned_lines.append(line)
+                    has_kept_title = True
             continue
 
         if chapter_title and (stripped == chapter_title or stripped == f"\t{chapter_title}:" or stripped == f"{chapter_title}:"):
@@ -385,10 +355,6 @@ def compile_summaries(input_dir: Path, output_file_path: Path = None, anthology:
     final_output_file.write_text(final_content, encoding="utf-8")
     logger.info("تم بنجاح تجميع الملفات وحفظ الملف الموحد في: %s", final_output_file)
 
-
-# ==========================================
-# رابعاً: الكشف التلقائي والواجهة الرئيسية
-# ==========================================
 
 def detect_mode(input_path: Path) -> str:
     """الكشف التلقائي الذكي لوضع التشغيل بناءً على محتويات مجلد المدخلات."""

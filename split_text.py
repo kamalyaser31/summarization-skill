@@ -1,7 +1,7 @@
 """
 سكربت تقسيم النصوص الطويلة لمهارة التلخيص.
-يقسم النص إلى أجزاء ضمن السعة الفعالة (3000-5000 كلمة)
-ويولّد Prompt جاهزاً للصق في بداية كل جزء.
+يقسم النص إلى أجزاء لا تتجاوز الحد الأقصى للكلمات (افتراضياً 1000 كلمة)
+ويُدرج Prompt توجيهياً في مطلع كل جزء جاهزاً للصق.
 """
 
 import argparse
@@ -10,6 +10,8 @@ import logging
 import re
 import sys
 from pathlib import Path
+
+from utils import read_file_with_fallback_encoding
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,24 +37,6 @@ CONTINUATION_NOTE = "هذا استكمال للتلخيص السابق؛ تاب�
 LAST_PART_NOTE = "هذا هو الجزء الأخير؛ اختم التلخيص بالخلاصة إن وُجدت."
 
 
-def read_file_with_fallback_encoding(file_path: Path) -> str:
-    """
-    قراءة الملف النصي مع محاولة استخدام عدة ترميزات شائعة.
-    يُجرب السكربت ترميز UTF-8 أولاً تماشياً مع المعايير الحديثة، ثم يرتد إلى
-    ترميز cp1256 العربي لبيئات Windows الشائعة لتفادي أخطاء فك الترميز.
-    وملاذاً أخيراً، يقرأ النص بترميز UTF-8 مع استبدال البايتات التالفة تفادياً للانهيار.
-    """
-    encodings = ["utf-8", "utf-8-sig", "cp1256", "latin-1"]
-    for enc in encodings:
-        try:
-            return file_path.read_text(encoding=enc)
-        except UnicodeDecodeError:
-            continue
-    try:
-        logger.warning("فشلت جميع الترميزات؛ سيتم قراءة الملف %s بترميز utf-8 مع استبدال البايتات التالفة.", file_path.name)
-        return file_path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        raise ValueError(f"تعذر قراءة الملف {file_path} باستخدام الترميزات المتاحة: {e}")
 
 
 def count_words(text: str) -> int:
@@ -79,7 +63,6 @@ def split_long_line(line: str, max_words: int) -> list[str]:
     for seg in sub_segments:
         if count_words(seg) > max_words:
             # إذا كانت الجملة الواحدة أطول من السعة، نقسمها كل max_words كلمة كخيار أخير
-            words_in_seg = seg.split()
             seg_start = 0
             word_count = 0
             for match in re.finditer(r'\s+', seg):
@@ -137,7 +120,6 @@ def find_split_point(text: str, max_words: int) -> int:
     sentence_words = 0
 
     best_line_split = -1
-    line_words_count = 0
 
     # علامات الوقف الشائعة لنهاية الجمل
     sentence_endings = ('.', '؟', '!', '?')
@@ -201,7 +183,6 @@ def find_split_point(text: str, max_words: int) -> int:
             pass
         else:
             best_line_split = split_index
-            line_words_count = current_words
 
     # نقوم باختيار النقطة الأعلى جودة التي تجاوزت الحد الأدنى لكي لا تتشظى الملفات
     if best_heading_split != -1 and heading_words >= MIN_WORDS_FOR_NEW_PART:
@@ -307,14 +288,17 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, f
         })
         logger.info("حفظ الجزء %d في: %s (%d كلمة)", current_part, part_name, words_count)
 
+    skill_dir = Path(__file__).parent
     metadata = {
-        "source": str(input_file.absolute()),
+        # مسار نسبي من جذر مجلد المهارة لضمان نقلية الملف بين الأجهزة
+        "source": str(input_file.relative_to(skill_dir)) if input_file.is_relative_to(skill_dir) else str(input_file),
         "total_words": total_words,
         "parts_count": total_parts,
         "max_words_per_part": max_words,
         "parts": metadata_parts,
-        "merged_output": "summary_final.md",
-        "merged_words": 0
+        # يُعيّنان بعد اكتمال الدمج عبر compile_summaries.py
+        "merged_output": None,
+        "merged_words": None,
     }
 
     with open(output_dir / "metadata.json", "w", encoding="utf-8") as f:
@@ -359,11 +343,12 @@ def main():
             
             # فحص الاستئناف على مستوى الملف (File-level Resume Check)
             if not args.force:
-                summary_dir = input_path / "summaries"
+                # الملخصات تُحفظ في مجلد المهارة لا في مجلد المدخلات
+                summary_dir = Path(__file__).parent / "summaries"
                 if rel_path.parent != Path("."):
-                    summary_file = summary_dir / rel_path.parent / f"{file_path.stem}.md"
+                    summary_file = summary_dir / rel_path.parent / f"{file_path.stem}_summary.md"
                 else:
-                    summary_file = summary_dir / f"{file_path.stem}.md"
+                    summary_file = summary_dir / f"{file_path.stem}_summary.md"
                 
                 if summary_file.exists() and summary_file.stat().st_mtime >= file_path.stat().st_mtime:
                     logger.info("وجدنا الملخص النهائي للملف «%s» قائماً وهو أحدث من أصله، فتقرر تجاوزه صوناً للوقت.", rel_path)
