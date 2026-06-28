@@ -8,13 +8,19 @@
 """
 
 import argparse
+import json
 import logging
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from utils import read_file_with_fallback_encoding
+from utils import read_file_with_fallback_encoding, get_workspace_root
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 # إعداد السجل تماشياً مع المعايير القياسية للمشروع
 logging.basicConfig(
@@ -35,15 +41,27 @@ CHAPTER_TITLE_PATTERN = re.compile(
     r"\((الفصل\s+[^\)]+|الباب\s+[^\)]+|الجزء\s+[^\)]+|المبحث\s+[^\)]+)\)",
     re.IGNORECASE
 )
+TIMESTAMP_PATTERN = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
+
 
 
 
 def strip_prompt(text: str) -> str:
     """حذف تعليمات التلخيص (Prompt) من بداية النص."""
-    return PROMPT_PATTERN.sub('', text, count=1).strip()
+    return PROMPT_PATTERN.sub('', text, count=1)
 
 
-def find_summary_files(input_dir: Path) -> list[Path]:
+def trim_outer_blank_lines(text: str) -> str:
+    """حذف الأسطر الفارغة الخارجية فقط مع الحفاظ على إزاحة أول سطر حقيقي."""
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def find_summary_files(input_dir: Path, allow_raw_parts: bool = False) -> list[Path]:
     """إيجاد ملفات الأجزاء وتأكيد تسلسلها وخلوها من فجوات الأرقام."""
     summary_pattern = re.compile(r'_part_(\d+)_summary\.md$', re.IGNORECASE)
     part_pattern = re.compile(r'_part_(\d+)\.md$', re.IGNORECASE)
@@ -70,7 +88,7 @@ def find_summary_files(input_dir: Path) -> list[Path]:
             raise ValueError(f"فجوة في أرقام ملفات الملخصات: {part_numbers}")
         return [f for _, f in summary_files]
 
-    if part_files:
+    if part_files and allow_raw_parts:
         part_files.sort(key=lambda x: x[0])
         part_numbers = [x[0] for x in part_files]
         expected = list(range(1, len(part_files) + 1))
@@ -78,12 +96,15 @@ def find_summary_files(input_dir: Path) -> list[Path]:
             raise ValueError(f"فجوة في أرقام ملفات الأجزاء الأصلية: {part_numbers}")
         return [f for _, f in part_files]
 
+    if part_files:
+        raise ValueError("وجدنا أجزاء أصلية فقط دون ملفات تلخيص. أنشئ ملفات *_summary.md أو استخدم --allow-raw-parts صراحة.")
+
     return []
 
 
 def clean_part_content(text: str, is_first: bool, main_title: str = None) -> tuple[str, str]:
     """تنظيف أجزاء الملخصات وإزالة البسملة والعناوين المكررة."""
-    text = strip_prompt(text).strip()
+    text = trim_outer_blank_lines(strip_prompt(text))
     if not text:
         return "", main_title
 
@@ -125,7 +146,7 @@ def clean_part_content(text: str, is_first: bool, main_title: str = None) -> tup
                 changed = True
                 continue
                 
-        return "\n".join(lines).strip(), extracted_title
+        return trim_outer_blank_lines("\n".join(lines)), extracted_title
 
 
 def merge_files(files: list[Path], strip_prompts: bool = True) -> str:
@@ -140,7 +161,7 @@ def merge_files(files: list[Path], strip_prompts: bool = True) -> str:
             is_first = (i == 0)
             text, main_title = clean_part_content(text, is_first, main_title)
         else:
-            text = text.strip()
+            text = trim_outer_blank_lines(text)
 
         if text:
             parts.append(text)
@@ -148,9 +169,105 @@ def merge_files(files: list[Path], strip_prompts: bool = True) -> str:
     return "\n\n".join(parts)
 
 
-def process_single_dir(input_path: Path, output_path_str: str, strip_prompts: bool, clean: bool):
+def audit_summary_text(text: str) -> list[str]:
+    """فحص تنسيق الملخص النهائي وفق القواعد العملية لمهارة التلخيص."""
+    issues = []
+    lines = text.splitlines()
+    non_empty = [line for line in lines if line.strip()]
+
+    if text.count(BISMILLAH) != 1:
+        issues.append("يجب أن تظهر البسملة مرة واحدة فقط.")
+
+    title_line_no = None
+    title_text = None
+    for line in non_empty:
+        stripped = line.strip()
+        if stripped == BISMILLAH:
+            continue
+        if stripped.endswith(":") and not stripped.startswith(("•", "-", "*")) and not re.match(r"^\d+[-.)]", stripped):
+            title_line_no = lines.index(line) + 1
+            title_text = stripped
+            break
+    if title_line_no is None:
+        issues.append("تعذر تحديد عنوان رئيسي واحد بعد البسملة.")
+    elif sum(1 for line in lines if line.strip() == title_text) != 1:
+        issues.append("يجب أن يظهر العنوان الرئيسي مرة واحدة فقط.")
+
+    if PROMPT_PATTERN.search(text) or "[تعليمات التلخيص" in text:
+        issues.append("توجد بقايا من تعليمات التلخيص داخل الملف النهائي.")
+
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped == BISMILLAH:
+            continue
+        if (
+            stripped.endswith(":")
+            and line_no != title_line_no
+            and not line.startswith("\t")
+            and not stripped.startswith(("•", "-", "*"))
+            and not re.match(r"^\d+[-.)]", stripped)
+        ):
+            issues.append(f"عنوان داخلي بلا Tab في السطر {line_no}: {stripped}")
+
+        if re.search(r"\.\s+\S", line):
+            issues.append(f"يوجد استمرار بعد نقطة في السطر {line_no}.")
+
+        if TIMESTAMP_PATTERN.search(line):
+            issues.append(f"يوجد طابع زمني في السطر {line_no}.")
+
+    return issues
+
+
+def audit_and_log(text: str, strict_audit: bool):
+    issues = audit_summary_text(text)
+    if not issues:
+        logger.info("اجتاز الملف النهائي فحص التنسيق.")
+        return
+
+    for issue in issues:
+        logger.warning("فحص التنسيق: %s", issue)
+    if strict_audit:
+        raise ValueError("فشل فحص التنسيق الصارم للملف النهائي.")
+
+
+def update_merge_metadata(input_path: Path, output_file: Path, merged_text: str):
+    """تحديث metadata.json بعد الدمج الناجح إن وجد."""
+    metadata_path = input_path / "metadata.json"
+    if not metadata_path.exists():
+        return
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        metadata["merged_output"] = str(output_file)
+        metadata["merged_words"] = len(merged_text.split())
+        metadata["merged_at"] = datetime.now(timezone.utc).isoformat()
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("تعذر تحديث ملف الميتادات بعد الدمج: %s", e)
+
+
+def is_safe_generated_parts_dir(path: Path) -> bool:
+    """التأكد من أن مسار الحذف مجلد أجزاء مولد داخل all_parts."""
+    try:
+        resolved = path.resolve()
+        generated_root = (get_workspace_root() / "all_parts").resolve()
+        return resolved.is_relative_to(generated_root) and resolved.name.endswith("_parts")
+    except OSError:
+        return False
+
+
+def process_single_dir(
+    input_path: Path,
+    output_path_str: str,
+    strip_prompts: bool,
+    clean: bool,
+    strict_audit: bool = False,
+    allow_raw_parts: bool = False,
+):
     """دمج أجزاء مجلد واحد وحفظ التلخيص المدمج النهائي."""
-    files = find_summary_files(input_path)
+    files = find_summary_files(input_path, allow_raw_parts=allow_raw_parts)
     if not files:
         logger.warning("لم يتم العثور على أجزاء للدمج في %s", input_path.name)
         return
@@ -164,24 +281,37 @@ def process_single_dir(input_path: Path, output_path_str: str, strip_prompts: bo
     if output_path_str:
         output_file = Path(output_path_str)
     else:
-        summaries_dir = Path(__file__).parent / "summaries"
+        summaries_dir = get_workspace_root() / "summaries"
         original_name = input_path.name.replace("_parts", "")
         output_file = summaries_dir / f"{original_name}_summary.md"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(merged_text, encoding="utf-8")
     logger.info("تم حفظ الملف المدمج في: %s", output_file.name)
+    update_merge_metadata(input_path, output_file, merged_text)
+    audit_and_log(merged_text, strict_audit)
 
     # مسح مجلد الأجزاء المؤقت
     if clean:
-        try:
-            shutil.rmtree(input_path)
-            logger.info("تم تنظيف وحذف مجلد الأجزاء المؤقت: %s", input_path.name)
-        except Exception as e:
-            logger.warning("فشل حذف مجلد الأجزاء %s: %s", input_path.name, e)
+        if is_safe_generated_parts_dir(input_path):
+            try:
+                shutil.rmtree(input_path)
+                logger.info("تم تنظيف وحذف مجلد الأجزاء المؤقت: %s", input_path.name)
+            except Exception as e:
+                logger.warning("فشل حذف مجلد الأجزاء %s: %s", input_path.name, e)
+        else:
+            logger.warning("تجاوزنا حذف %s لأنه ليس مجلد أجزاء مولداً داخل all_parts.", input_path)
 
 
-def process_batch_merge(input_path: Path, output_path_str: str, strip_prompts: bool, clean: bool):
+def process_batch_merge(
+    input_path: Path,
+    output_path_str: str,
+    strip_prompts: bool,
+    clean: bool,
+    strict_audit: bool = False,
+    allow_raw_parts: bool = False,
+    clean_root: bool = False,
+):
     """البحث عن ملفات الأجزاء ودمجها دفعياً."""
     metadata_files = list(input_path.glob("**/metadata.json"))
     if not metadata_files:
@@ -198,21 +328,28 @@ def process_batch_merge(input_path: Path, output_path_str: str, strip_prompts: b
         original_stem = parts_dir.name.replace("_parts", "")
         
         # تحديد وجهة الحفظ في مجلد summaries بمجلد المهارة
-        dest_folder = Path(__file__).parent / "summaries"
+        dest_folder = get_workspace_root() / "summaries"
         if rel_parts_dir.parent != Path("."):
             dest_file = dest_folder / rel_parts_dir.parent / f"{original_stem}_summary.md"
         else:
             dest_file = dest_folder / f"{original_stem}_summary.md"
 
         logger.info("[%d/%d] دمج أجزاء: %s -> %s", idx + 1, len(metadata_files), rel_parts_dir, dest_file.name)
-        process_single_dir(parts_dir, str(dest_file), strip_prompts, clean)
+        process_single_dir(parts_dir, str(dest_file), strip_prompts, clean, strict_audit, allow_raw_parts)
 
-    if clean:
+    if clean_root:
         try:
-            # لا نُقيِّد الحذف باسم المجلد لأن المستخدم قد يمرر أي مسار جامع
-            if input_path.exists():
+            generated_root = (get_workspace_root() / "all_parts").resolve()
+            resolved_input = input_path.resolve()
+            if (
+                input_path.exists()
+                and resolved_input.is_relative_to(generated_root)
+                and not any(input_path.iterdir())
+            ):
                 shutil.rmtree(input_path)
                 logger.info("تم مسح وتنظيف المجلد الجامع «%s» بالكامل.", input_path.name)
+            else:
+                logger.warning("لم نحذف المجلد الجامع لأنه ليس فارغاً أو ليس داخل all_parts.")
         except Exception as e:
             logger.warning("فشل حذف المجلد الجامع: %s", e)
 
@@ -348,7 +485,7 @@ def compile_summaries(input_dir: Path, output_file_path: Path = None, anthology:
     else:
         sanitized_title = re.sub(r'[\\/*?:"<>|]', "", final_title)
         sanitized_title = re.sub(r'\s+', '_', sanitized_title).strip("_")
-        final_output_file = Path(__file__).parent / f"{sanitized_title}.md"
+        final_output_file = get_workspace_root() / f"{sanitized_title}.md"
 
     final_output_file.parent.mkdir(parents=True, exist_ok=True)
     final_content = "\n".join(compiled_parts)
@@ -380,7 +517,7 @@ if __name__ == "__main__":
         "input_dir",
         type=str,
         nargs="?",
-        default=str(Path(__file__).parent / "summaries"),
+        default=str(get_workspace_root() / "summaries"),
         help="مجلد المدخلات (الافتراضي: summaries في مجلد المهارة)"
     )
     parser.add_argument(
@@ -400,6 +537,21 @@ if __name__ == "__main__":
         "-c", "--clean",
         action="store_true",
         help="مسح مجلد الأجزاء بعد نجاح الدمج لتوفير المساحة"
+    )
+    parser.add_argument(
+        "--clean-root",
+        action="store_true",
+        help="حذف المجلد الجامع بعد الدمج فقط إذا كان فارغاً وداخل all_parts"
+    )
+    parser.add_argument(
+        "--allow-raw-parts",
+        action="store_true",
+        help="السماح بدمج ملفات الأجزاء الأصلية عند غياب ملفات *_summary.md"
+    )
+    parser.add_argument(
+        "--strict-audit",
+        action="store_true",
+        help="إنهاء التشغيل بخطأ إذا فشل فحص تنسيق الملف النهائي"
     )
     parser.add_argument(
         "--keep-prompts",
@@ -431,10 +583,25 @@ if __name__ == "__main__":
         is_single = (input_path / "metadata.json").exists()
         if is_single:
             logger.info("دمج أجزاء ملف مفرد في: %s", input_path.name)
-            process_single_dir(input_path, args.output, not args.keep_prompts, args.clean)
+            process_single_dir(
+                input_path,
+                args.output,
+                not args.keep_prompts,
+                args.clean,
+                strict_audit=args.strict_audit,
+                allow_raw_parts=args.allow_raw_parts,
+            )
         else:
             logger.info("دمج أجزاء دفعي في مجلد: %s", input_path.name)
-            process_batch_merge(input_path, args.output, not args.keep_prompts, args.clean)
+            process_batch_merge(
+                input_path,
+                args.output,
+                not args.keep_prompts,
+                args.clean,
+                strict_audit=args.strict_audit,
+                allow_raw_parts=args.allow_raw_parts,
+                clean_root=args.clean_root,
+            )
     else:
         logger.info("تجميع فصول التلخيصات في مجلد: %s", input_path.name)
         compile_summaries(input_path, output_path, args.anthology)

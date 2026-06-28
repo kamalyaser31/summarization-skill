@@ -8,12 +8,17 @@
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 # إعداد السجل تماشياً مع المعايير القياسية
 logging.basicConfig(
@@ -25,8 +30,11 @@ logger = logging.getLogger(__name__)
 
 # المجلد الأساسي للمشروع
 BASE_DIR = Path(__file__).parent
+TEST_ARTIFACT_PREFIXES = ("sample_text", "dummy", "large_book", "cli_", "merge_", "checkpoint_", "stale_")
 
-# استيراد الوظائف مباشرة للفحص البرميجي
+# استيراد الوظائف مباشرة للفحص البرميجي بعد تهيئة مسار البحث
+sys.path.insert(0, str(BASE_DIR / ".agents" / "skills" / "summarization_skill" / "scripts"))
+
 from split_text import (
     count_words,
     read_file_with_fallback_encoding as split_read_encoding,
@@ -37,7 +45,23 @@ from split_text import (
 import compile_summaries as cs
 
 
+
 class TestSummarizationSkill(unittest.TestCase):
+
+    def clean_shared_test_artifacts(self):
+        """تنظيف مخلفات الاختبارات من المجلدات المشتركة دون حذف ملفات المستخدم."""
+        for folder in ["all_parts", "summaries"]:
+            folder_path = BASE_DIR / folder
+            if folder_path.exists():
+                for item in sorted(folder_path.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                    if item.exists() and item.name.startswith(TEST_ARTIFACT_PREFIXES):
+                        try:
+                            if item.is_dir():
+                                shutil.rmtree(item)
+                            else:
+                                item.unlink()
+                        except Exception:
+                            pass
 
     def setUp(self):
         """تهيئة بيئة معزولة ونظيفة للاختبارات داخل مساحة العمل."""
@@ -66,23 +90,7 @@ class TestSummarizationSkill(unittest.TestCase):
         if self.test_workspace.exists():
             shutil.rmtree(self.test_workspace)
             
-        # إزالة المجلدات المشتركة الناتجة عن الاختبارات بطريقة آمنة
-        for folder in ["all_parts", "summaries"]:
-            folder_path = BASE_DIR / folder
-            if folder_path.exists():
-                try:
-                    shutil.rmtree(folder_path)
-                except (PermissionError, OSError):
-                    # في حال تعذر الحذف لوجود ملفات مستخدم أو أقفال، ننظف ملفات الفحص فقط
-                    for item in folder_path.iterdir():
-                        if any(x in item.name for x in ["sample_text", "dummy", "large_book", "cli_"]):
-                            try:
-                                if item.is_dir():
-                                    shutil.rmtree(item)
-                                else:
-                                    item.unlink()
-                            except Exception:
-                                pass
+        self.clean_shared_test_artifacts()
                 
         # مسح أي ملفات مدمجة ناتجة في مساحة العمل
         for file in BASE_DIR.glob("*.md"):
@@ -170,7 +178,7 @@ class TestSummarizationSkill(unittest.TestCase):
         logger.info("بدء اختبار تقسيم ملف مفرد وتدقيق ميتادات الأجزاء...")
         
         output_dir = self.test_workspace / "parts"
-        split_text(self.sample_txt, output_dir, max_words=25, force=True)
+        split_text(self.sample_txt, output_dir, max_words=25, force=True, min_words=5)
         
         # فحص تولد الأجزاء وملف metadata.json
         metadata_file = output_dir / "metadata.json"
@@ -180,6 +188,8 @@ class TestSummarizationSkill(unittest.TestCase):
             metadata = json.load(f)
             
         self.assertEqual(metadata["total_words"], count_words(self.sample_content))
+        self.assertEqual(metadata["min_words_for_new_part"], 5)
+        self.assertIn("source_fingerprint", metadata)
         self.assertTrue(metadata["parts_count"] > 1)
         
         # فحص تضمين تعليمات التلخيص
@@ -193,7 +203,7 @@ class TestSummarizationSkill(unittest.TestCase):
         logger.info("بدء اختبار آلية الاستئناف وتجنب تكرار الكتابة...")
         
         output_dir = self.test_workspace / "checkpoint_parts"
-        split_text(self.sample_txt, output_dir, max_words=25, force=True)
+        split_text(self.sample_txt, output_dir, max_words=25, force=True, min_words=5)
         
         # حفظ تاريخ تعديل الملف الأول
         metadata_file = output_dir / "metadata.json"
@@ -203,15 +213,36 @@ class TestSummarizationSkill(unittest.TestCase):
         orig_mtime = first_part_path.stat().st_mtime
         
         # تشغيل التقسيم مرة أخرى بدون خيار force
-        split_text(self.sample_txt, output_dir, max_words=25, force=False)
+        split_text(self.sample_txt, output_dir, max_words=25, force=False, min_words=5)
         self.assertEqual(first_part_path.stat().st_mtime, orig_mtime)
         
         # تشغيل التقسيم مرة أخرى مع خيار force
         # ننتظر قليلاً للتأكد من تغير الوقت المتاح بالنظام
         import time
         time.sleep(0.1)
-        split_text(self.sample_txt, output_dir, max_words=25, force=True)
+        split_text(self.sample_txt, output_dir, max_words=25, force=True, min_words=5)
         self.assertNotEqual(first_part_path.stat().st_mtime, orig_mtime)
+
+    def test_split_text_checkpoint_detects_same_word_count_change(self):
+        """التحقق من أن البصمة تكشف تغير المحتوى ولو بقي عدد الكلمات كما هو."""
+        logger.info("بدء اختبار بصمة الاستئناف عند تساوي عدد الكلمات...")
+
+        source = self.test_workspace / "stale_source.txt"
+        source.write_text("كلمة أولى. كلمة ثانية. كلمة ثالثة.", encoding="utf-8")
+        output_dir = self.test_workspace / "stale_parts"
+        split_text(source, output_dir, max_words=2, force=True, min_words=1)
+
+        metadata_file = output_dir / "metadata.json"
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            old_meta = json.load(f)
+        old_hash = old_meta["source_fingerprint"]["sha256"]
+
+        source.write_text("عبارة بديلة. كلمة ثانية. كلمة ثالثة.", encoding="utf-8")
+        split_text(source, output_dir, max_words=2, force=False, min_words=1)
+
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            new_meta = json.load(f)
+        self.assertNotEqual(new_meta["source_fingerprint"]["sha256"], old_hash)
 
     def test_detect_mode_correct(self):
         """التحقق من الكشف التلقائي الذكي لوضع التشغيل (Auto Mode Detection)."""
@@ -276,6 +307,107 @@ class TestSummarizationSkill(unittest.TestCase):
         self.assertEqual(content.count("شرح كتاب الأصول الثلاثة:"), 1)
         self.assertNotIn("[تعليمات التلخيص", content)
 
+    def test_merge_preserves_tabbed_heading_from_later_parts(self):
+        """التحقق من حفظ Tab في أول عنوان داخلي للجزء الثاني بعد الدمج."""
+        parts_dir = self.test_workspace / "merge_tab_parts"
+        parts_dir.mkdir()
+        (parts_dir / "metadata.json").write_text(json.dumps({"parts_count": 2}, ensure_ascii=False), encoding="utf-8")
+        (parts_dir / "dummy_part_01_summary.md").write_text(
+            "بسم الله الرحمن الرحيم.\nشرح كتاب الاختبار:\n\tالمقدمة:\nنص أول.",
+            encoding="utf-8",
+        )
+        (parts_dir / "dummy_part_02_summary.md").write_text(
+            "بسم الله الرحمن الرحيم.\nشرح كتاب الاختبار:\n\tالعنوان الثاني:\nنص ثان.",
+            encoding="utf-8",
+        )
+
+        output_summary = self.test_workspace / "tabbed_summary.md"
+        cs.process_single_dir(parts_dir, str(output_summary), strip_prompts=True, clean=False)
+
+        content = output_summary.read_text(encoding="utf-8")
+        self.assertIn("\n\tالعنوان الثاني:", content)
+
+    def test_merge_requires_summary_files_by_default(self):
+        """التحقق من منع دمج الأجزاء الأصلية raw بطريق الخطأ."""
+        parts_dir = self.test_workspace / "merge_raw_parts"
+        parts_dir.mkdir()
+        (parts_dir / "metadata.json").write_text("{}", encoding="utf-8")
+        (parts_dir / "dummy_part_01.md").write_text("نص خام", encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            cs.process_single_dir(parts_dir, str(self.test_workspace / "raw.md"), strip_prompts=True, clean=False)
+
+    def test_merge_updates_metadata(self):
+        """التحقق من تحديث الميتادات بعد الدمج الناجح."""
+        parts_dir = self.test_workspace / "merge_meta_parts"
+        parts_dir.mkdir()
+        (parts_dir / "metadata.json").write_text(json.dumps({"merged_output": None, "merged_words": None}, ensure_ascii=False), encoding="utf-8")
+        (parts_dir / "dummy_part_01_summary.md").write_text(
+            "بسم الله الرحمن الرحيم.\nشرح كتاب الاختبار:\n\tباب:\nنص.",
+            encoding="utf-8",
+        )
+
+        output_summary = self.test_workspace / "meta_summary.md"
+        cs.process_single_dir(parts_dir, str(output_summary), strip_prompts=True, clean=False)
+        metadata = json.loads((parts_dir / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(metadata["merged_output"], str(output_summary))
+        self.assertIsInstance(metadata["merged_words"], int)
+        self.assertIn("merged_at", metadata)
+
+    def test_clean_does_not_delete_arbitrary_parent_folder(self):
+        """التحقق من أن خيار التنظيف لا يحذف مجلداً خارج all_parts."""
+        parts_dir = self.test_workspace / "merge_safe_parts"
+        parts_dir.mkdir()
+        (parts_dir / "metadata.json").write_text("{}", encoding="utf-8")
+        (parts_dir / "dummy_part_01_summary.md").write_text(
+            "بسم الله الرحمن الرحيم.\nشرح كتاب الاختبار:\n\tباب:\nنص.",
+            encoding="utf-8",
+        )
+        output_summary = self.test_workspace / "safe_summary.md"
+
+        cs.process_single_dir(parts_dir, str(output_summary), strip_prompts=True, clean=True)
+
+        self.assertTrue(parts_dir.exists())
+        self.assertTrue(output_summary.exists())
+
+    def test_teardown_keeps_existing_summaries(self):
+        """التحقق من أن تنظيف الاختبارات لا يحذف ملخصات مستخدم غير مملوكة للاختبار."""
+        summaries_dir = BASE_DIR / "summaries"
+        summaries_dir.mkdir(exist_ok=True)
+        user_file = summaries_dir / "__user_cleanup_guard_do_not_delete__.md"
+        suffix = 1
+        while user_file.exists():
+            user_file = summaries_dir / f"__user_cleanup_guard_do_not_delete_{suffix}.md"
+            suffix += 1
+        test_file = summaries_dir / "sample_text_cleanup_probe.md"
+        user_file.write_text("ملف مستخدم", encoding="utf-8")
+        test_file.write_text("ملف اختبار", encoding="utf-8")
+        self.addCleanup(lambda: user_file.exists() and user_file.unlink())
+
+        self.clean_shared_test_artifacts()
+
+        self.assertTrue(user_file.exists())
+        self.assertFalse(test_file.exists())
+
+    def test_audit_summary_text_reports_format_issues(self):
+        """التحقق من فحص التنسيق للحالات الأساسية."""
+        bad_text = (
+            "بسم الله الرحمن الرحيم.\n"
+            "بسم الله الرحمن الرحيم.\n"
+            "شرح كتاب الاختبار:\n"
+            "[تعليمات التلخيص - الجزء 1 من 1]\n"
+            "عنوان داخلي:\n"
+            "جملة أولى. جملة ثانية.\n"
+            "00:12\n"
+        )
+        issues = cs.audit_summary_text(bad_text)
+        self.assertTrue(any("البسملة" in issue for issue in issues))
+        self.assertTrue(any("تعليمات التلخيص" in issue for issue in issues))
+        self.assertTrue(any("Tab" in issue for issue in issues))
+        self.assertTrue(any("استمرار بعد نقطة" in issue for issue in issues))
+        self.assertTrue(any("طابع زمني" in issue for issue in issues))
+
     def test_compile_mode_chapter_sorting_and_deduplication(self):
         """التحقق من الفرز الحسابي للفصول وتطهير البسملة والعناوين المكررة."""
         logger.info("بدء اختبار تجميع الفصول مع الترتيب الحسابي الذكي...")
@@ -339,14 +471,17 @@ class TestSummarizationSkill(unittest.TestCase):
         output_dir = self.test_workspace / "cli_parts"
         cmd = [
             sys.executable,
-            str(BASE_DIR / "split_text.py"),
+            str(BASE_DIR / ".agents" / "skills" / "summarization_skill" / "scripts" / "split_text.py"),
             str(self.sample_txt),
             "-o", str(output_dir),
             "--max-words", "25",
+            "--min-words", "5",
             "-f"
         ]
         
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
         self.assertEqual(res.returncode, 0)
         self.assertTrue((output_dir / "metadata.json").exists())
 
@@ -355,8 +490,10 @@ class TestSummarizationSkill(unittest.TestCase):
         logger.info("بدء اختبار تشغيل واجهة CLI لسكربت التجميع والدمج الموحد...")
         
         # 1. تقسيم النص أولاً للحصول على أجزاء للدمج
-        parts_dir = self.test_workspace / "cli_merge_parts"
-        split_text(self.sample_txt, parts_dir, max_words=25, force=True)
+        parts_dir = BASE_DIR / "all_parts" / "cli_merge_parts"
+        if parts_dir.exists():
+            shutil.rmtree(parts_dir)
+        split_text(self.sample_txt, parts_dir, max_words=25, force=True, min_words=5)
         
         # محاكاة التلخيص بكتابة ملفات تلخيص الأجزاء
         for f in parts_dir.glob("*_part_*.md"):
@@ -373,14 +510,16 @@ class TestSummarizationSkill(unittest.TestCase):
         final_summary = self.test_workspace / "cli_merged_final.md"
         cmd = [
             sys.executable,
-            str(BASE_DIR / "compile_summaries.py"),
+            str(BASE_DIR / ".agents" / "skills" / "summarization_skill" / "scripts" / "compile_summaries.py"),
             str(parts_dir),
             "-o", str(final_summary),
             "--mode", "merge",
             "-c"
         ]
         
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
         self.assertEqual(res.returncode, 0)
         self.assertTrue(final_summary.exists())
         # خيار -c / --clean يجب أن يمسح مجلد الأجزاء

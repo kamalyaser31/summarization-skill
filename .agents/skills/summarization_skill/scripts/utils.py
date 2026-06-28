@@ -8,6 +8,20 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def get_workspace_root() -> Path:
+    """
+    البحث عن جذر بيئة العمل بالصعود في شجرة المجلدات حتى العثور على .git أو .agents.
+    """
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / ".git").exists() or (parent / ".agents").exists():
+            return parent
+    # إذا لم يعثر على علامة مميزة، يصعد 4 مستويات إن أمكن
+    if len(current.parents) > 4:
+        return current.parents[4]
+    return current.parent
+
+
 def read_file_with_fallback_encoding(file_path: Path) -> str:
     """
     قراءة الملف النصي مع محاولة استخدام عدة ترميزات شائعة.

@@ -5,13 +5,18 @@
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import re
 import sys
 from pathlib import Path
 
-from utils import read_file_with_fallback_encoding
+from utils import read_file_with_fallback_encoding, get_workspace_root
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +28,8 @@ logger = logging.getLogger(__name__)
 # الحد الأقصى للكلمات في الجزء الواحد
 MAX_WORDS = 1000
 # الحد الأدنى المقبول قبل فتح جزء جديد
-MIN_WORDS_FOR_NEW_PART = 200
+MIN_WORDS_FOR_NEW_PART = 500
+PROMPT_VERSION = 1
 
 PROMPT_TEMPLATE = """\
 [تعليمات التلخيص - الجزء {current} من {total}]
@@ -80,7 +86,22 @@ def split_long_line(line: str, max_words: int) -> list[str]:
     return final_segments
 
 
-def find_split_point(text: str, max_words: int) -> int:
+def source_fingerprint(input_file: Path) -> dict:
+    """إنشاء بصمة ثابتة للملف الأصلي لاكتشاف تغير المحتوى ولو تساوى عدد الكلمات."""
+    stat = input_file.stat()
+    digest = hashlib.sha256()
+    with open(input_file, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return {
+        "sha256": digest.hexdigest(),
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def find_split_point(text: str, max_words: int, min_words: int = MIN_WORDS_FOR_NEW_PART) -> int:
     """
     إيجاد أفضل نقطة قطع في النص ضمن حد الكلمات.
     يبحث عن أقرب حد طبيعي بهذا الترتيب الحاكم:
@@ -185,13 +206,13 @@ def find_split_point(text: str, max_words: int) -> int:
             best_line_split = split_index
 
     # نقوم باختيار النقطة الأعلى جودة التي تجاوزت الحد الأدنى لكي لا تتشظى الملفات
-    if best_heading_split != -1 and heading_words >= MIN_WORDS_FOR_NEW_PART:
+    if best_heading_split != -1 and heading_words >= min_words:
         return best_heading_split
 
-    if best_paragraph_split != -1 and paragraph_words >= MIN_WORDS_FOR_NEW_PART:
+    if best_paragraph_split != -1 and paragraph_words >= min_words:
         return best_paragraph_split
 
-    if best_sentence_split != -1 and sentence_words >= MIN_WORDS_FOR_NEW_PART:
+    if best_sentence_split != -1 and sentence_words >= min_words:
         return best_sentence_split
 
     # إذا تعذر العثور على أي نقطة تستوفي الحد الأدنى، نتغاضى عن هذا الشرط
@@ -212,10 +233,17 @@ def find_split_point(text: str, max_words: int) -> int:
     return len(text)
 
 
-def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, force: bool = False):
+def split_text(
+    input_file: Path,
+    output_dir: Path,
+    max_words: int = MAX_WORDS,
+    force: bool = False,
+    min_words: int = MIN_WORDS_FOR_NEW_PART,
+):
     """تقسيم النص وحفظ الأجزاء."""
     content = read_file_with_fallback_encoding(input_file)
     total_words = count_words(content)
+    fingerprint = source_fingerprint(input_file)
 
     logger.info("حجم الملف الكلي: %d كلمة", total_words)
 
@@ -226,7 +254,14 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, f
             try:
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
-                if metadata.get("total_words") == total_words:
+                fingerprint_matches = metadata.get("source_fingerprint", {}).get("sha256") == fingerprint["sha256"]
+                options_match = (
+                    metadata.get("total_words") == total_words
+                    and metadata.get("max_words_per_part") == max_words
+                    and metadata.get("min_words_for_new_part") == min_words
+                    and metadata.get("prompt_version") == PROMPT_VERSION
+                )
+                if fingerprint_matches and options_match:
                     all_parts_exist = True
                     for part_info in metadata.get("parts", []):
                         part_file = output_dir / part_info["file"]
@@ -246,12 +281,12 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, f
         parts = []
         remaining = content
         while count_words(remaining) > max_words:
-            split_idx = find_split_point(remaining, max_words)
+            split_idx = find_split_point(remaining, max_words, min_words)
             part = remaining[:split_idx]
             parts.append(part)
             remaining = remaining[split_idx:]
         if remaining:
-            if parts and count_words(remaining) < MIN_WORDS_FOR_NEW_PART:
+            if parts and count_words(remaining) < min_words:
                 parts[-1] += remaining
             else:
                 parts.append(remaining)
@@ -288,63 +323,76 @@ def split_text(input_file: Path, output_dir: Path, max_words: int = MAX_WORDS, f
         })
         logger.info("حفظ الجزء %d في: %s (%d كلمة)", current_part, part_name, words_count)
 
-    skill_dir = Path(__file__).parent
+    skill_dir = get_workspace_root()
     metadata = {
         # مسار نسبي من جذر مجلد المهارة لضمان نقلية الملف بين الأجهزة
         "source": str(input_file.relative_to(skill_dir)) if input_file.is_relative_to(skill_dir) else str(input_file),
         "total_words": total_words,
+        "source_fingerprint": fingerprint,
         "parts_count": total_parts,
         "max_words_per_part": max_words,
+        "min_words_for_new_part": min_words,
+        "prompt_version": PROMPT_VERSION,
         "parts": metadata_parts,
         # يُعيّنان بعد اكتمال الدمج عبر compile_summaries.py
         "merged_output": None,
         "merged_words": None,
     }
 
-    with open(output_dir / "metadata.json", "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-    logger.info("تم حفظ ملف الميتادات في: %s", output_dir / "metadata.json")
+    try:
+        with open(output_dir / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error("تعذر حفظ ملف metadata.json: %s", e)
 
 
 def main():
     parser = argparse.ArgumentParser(description="تقسيم النصوص الطويلة لمهارة التلخيص.")
-    parser.add_argument("input", type=str, help="مسار الملف النصي أو المجلد المراد تقسيمه")
-    parser.add_argument("-o", "--output", type=str, default=None, help="مجلد المخرجات")
-    parser.add_argument("--max-words", type=int, default=MAX_WORDS, help="الحد الأقصى للكلمات في الجزء الواحد")
-    parser.add_argument("-r", "--recursive", action="store_true", help="البحث التراجعي في المجلدات الفرعية عند إدخال مجلد")
-    parser.add_argument("-f", "--force", action="store_true", help="إجبار السكربت على إعادة المعالجة وتخطي فحوص الاستئناف والتحقق")
-    args = parser.parse_args()
+    parser.add_argument("input", help="مسار الملف النصي الأصلي")
+    parser.add_argument("-o", "--output", help="مجلد مخرجات الأجزاء المقسمة (اختياري)")
+    parser.add_argument(
+        "--max-words",
+        type=int,
+        default=MAX_WORDS,
+        help=f"الحد الأقصى للكلمات في الجزء الواحد (الافتراضي: {MAX_WORDS})",
+    )
+    parser.add_argument(
+        "--min-words",
+        type=int,
+        default=MIN_WORDS_FOR_NEW_PART,
+        help=f"الحد الأدنى المقبول قبل فتح جزء جديد (الافتراضي: {MIN_WORDS_FOR_NEW_PART})",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="فرض إعادة تقسيم الملف وإلغاء الاستئناف التلقائي",
+    )
 
+    args = parser.parse_args()
     input_path = Path(args.input)
+
     if not input_path.exists():
-        logger.error("المسار غير موجود: %s", args.input)
+        logger.error("الملف غير موجود: %s", args.input)
         sys.exit(1)
 
     if input_path.is_dir():
-        logger.info("تم الكشف عن مجلد كمدخل: %s. الشروع في الفرز والتقسيم الدفعي...", input_path.name)
-        
-        # فرز الملفات
-        pattern = "**/*" if args.recursive else "*"
-        all_files = []
-        for p in input_path.glob(pattern):
-            if p.is_file() and p.suffix.lower() in [".txt", ".md"]:
-                # استثناء مجلدات الأجزاء ومجلد المخرجات summaries
-                parts = p.parts
-                if "all_parts" in parts or "summaries" in parts or any(part.endswith("_parts") for part in parts):
-                    continue
-                all_files.append(p)
-                
-        logger.info("تم العثور على %d ملفات نصية صالحة للتقسيم.", len(all_files))
-        
-        # التقسيم التتابعي
+        # معالجة المجلدات دفعياً
+        all_files = sorted(
+            [f for f in input_path.rglob("*") if f.is_file() and f.suffix in (".txt", ".md")]
+        )
+        if not all_files:
+            logger.warning("لا توجد ملفات نصية في المجلد المحدد.")
+            sys.exit(0)
+
+        logger.info("تم العثور على %d ملفات للتقسيم الدفعي.", len(all_files))
         for i, file_path in enumerate(all_files):
             rel_path = file_path.relative_to(input_path)
             
             # فحص الاستئناف على مستوى الملف (File-level Resume Check)
             if not args.force:
                 # الملخصات تُحفظ في مجلد المهارة لا في مجلد المدخلات
-                summary_dir = Path(__file__).parent / "summaries"
+                summary_dir = get_workspace_root() / "summaries"
                 if rel_path.parent != Path("."):
                     summary_file = summary_dir / rel_path.parent / f"{file_path.stem}_summary.md"
                 else:
@@ -357,22 +405,22 @@ def main():
             # تحديد مجلد الأجزاء في المجلد الجامع all_parts محاكياً الهيكل الشجري
             parts_dir_name = f"{file_path.stem}_parts"
             if rel_path.parent != Path("."):
-                dest_dir = Path(__file__).parent / "all_parts" / rel_path.parent / parts_dir_name
+                dest_dir = get_workspace_root() / "all_parts" / rel_path.parent / parts_dir_name
             else:
-                dest_dir = Path(__file__).parent / "all_parts" / parts_dir_name
+                dest_dir = get_workspace_root() / "all_parts" / parts_dir_name
                 
-            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, dest_dir.relative_to(Path(__file__).parent))
-            split_text(file_path, dest_dir, args.max_words, force=args.force)
+            logger.info("[%d/%d] تقسيم الملف: %s -> %s", i + 1, len(all_files), rel_path, dest_dir.relative_to(get_workspace_root()))
+            split_text(file_path, dest_dir, args.max_words, force=args.force, min_words=args.min_words)
             
         logger.info("=== اكتمل التقسيم الدفعي للمجلد بنجاح! ===")
     else:
         # إذا لم يُحدد مجلد المخرجات، يتم الحفظ في مجلد الأجزاء في مجلد المهارة
         if args.output is None:
-            output_dir = Path(__file__).parent / "all_parts" / f"{input_path.stem}_parts"
+            output_dir = get_workspace_root() / "all_parts" / f"{input_path.stem}_parts"
         else:
             output_dir = Path(args.output)
 
-        split_text(input_path, output_dir, args.max_words, force=args.force)
+        split_text(input_path, output_dir, args.max_words, force=args.force, min_words=args.min_words)
 
 
 if __name__ == "__main__":

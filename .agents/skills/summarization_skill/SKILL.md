@@ -1,3 +1,8 @@
+---
+name: summarization_skill
+description: تلخيص النصوص الطويلة ومحاكاة الأسلوب وتجميع فصول الكتب
+---
+
 # دليل مهارة التلخيص العام والمحاكاة الأسلوبية
 
 هذا المستند يمثل "موجه النظام" (System Prompt) أو "المهارة" (Skill Instruction) المصممة لتوجيه النماذج اللغوية لمحاكاة أسلوب المستخدم في التلخيص في شتى العلوم والمعارف. لتفعيل المهارة، يتم تلقيم النص الكامل أدناه للنموذج اللغوي كتعليمات نظامية (System Instructions) قبل البدء في تزويده بالنصوص المراد تلخيصها.
@@ -87,7 +92,7 @@
 ولا يأتي العدد قبل المثنى، لأنه لا يحتاج، لكن قد يأتي بعده.
 معي كتابان اثنان، وهتان امرأتان اثنتان.
 بخلاف الجمع، فإن العدد يأتي قبله.
-•الضمير المستتر يقدر، والضمير المحذوف يحير.
+•ضمير المستتر يقدر، والضمير المحذوف يحير.
 •تعريف المعرف ملل.
 ```
 
@@ -142,7 +147,7 @@
 ### 7.2 سكربت التقسيم التلقائي (split_text.py)
 يوجد سكربت مساعد لتقسيم النصوص الطويلة تلقائياً في المسار:
 ```
-e:\GitHub\summarization_skill\split_text.py
+.agents\skills\summarization_skill\scripts\split_text.py
 ```
 
 #### الوظيفة
@@ -151,7 +156,7 @@ e:\GitHub\summarization_skill\split_text.py
 
 #### صيغة الاستخدام
 ```bash
-python split_text.py <مسار_الملف> [خيارات]
+python .agents/skills/summarization_skill/scripts/split_text.py <مسار_الملف> [خيارات]
 ```
 
 #### الخيارات المتاحة
@@ -164,13 +169,13 @@ python split_text.py <مسار_الملف> [خيارات]
 #### أمثلة عملية
 ```bash
 # تقسيم أساسي (المخرجات تُحفظ تلقائياً بجانب الملف)
-python split_text.py "E:\تفريغات\شرح_الطحاوية.txt"
+python .agents/skills/summarization_skill/scripts/split_text.py "E:\تفريغات\شرح_الطحاوية.txt"
 
 # تحديد مجلد مخرجات مخصص
-python split_text.py "E:\تفريغات\شرح_الطحاوية.txt" -o "e:\GitHub\summarization_skill\all_parts\الطحاوية_أجزاء"
+python .agents/skills/summarization_skill/scripts/split_text.py "E:\تفريغات\شرح_الطحاوية.txt" -o "e:\GitHub\my workflows\summarization_skill\all_parts\الطحاوية_أجزاء"
 
 # تقليل حجم الجزء إلى 500 كلمة لنصوص شديدة الكثافة
-python split_text.py "E:\تفريغات\شرح_الطحاوية.txt" --max-words 500
+python .agents/skills/summarization_skill/scripts/split_text.py "E:\تفريغات\شرح_الطحاوية.txt" --max-words 500
 ```
 
 #### المخرجات
@@ -206,15 +211,15 @@ python split_text.py "E:\تفريغات\شرح_الطحاوية.txt" --max-words
    ```
 
 ### 7.3 سكربت دمج الأجزاء وتجميع الفصول (compile_summaries.py)
-يُستخدم السكربت الموحد `compile_summaries.py` لدمج الأجزاء المفرقة للتلخيص، وتجميعها في كتاب واحد نهائي. يوجد السكربت في مسار المشروع:
+يُسخدم السكربت الموحد `compile_summaries.py` لدمج الأجزاء المفرقة للتلخيص، وتجميعها في كتاب واحد نهائي. يوجد السكربت في مسار المشروع:
 ```
-e:\GitHub\summarization_skill\compile_summaries.py
+.agents\skills\summarization_skill\scripts\compile_summaries.py
 ```
 يتحقق السكربت تلقائياً من نوع المجلد؛ فإذا احتوى على ملفات أجزاء، يدمجها بالترتيب ويحذف تعليمات التلخيص (Prompt) من صدارة الأجزاء، ويزيل البسملة والعناوين المكررة.
 
 #### صيغة الاستخدام للدمج
 ```bash
-python compile_summaries.py <مجلد_الأجزاء> [خيارات]
+python .agents/skills/summarization_skill/scripts/compile_summaries.py <مجلد_الأجزاء> [خيارات]
 ```
 
 #### الخيارات المتاحة للدمج
@@ -228,14 +233,14 @@ python compile_summaries.py <مجلد_الأجزاء> [خيارات]
 #### أمثلة عملية للدمج
 ```bash
 # دمج أساسي مع مسح الأجزاء تلقائياً
-python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحاوية_أجزاء" -c
+python .agents/skills/summarization_skill/scripts/compile_summaries.py "e:\GitHub\my workflows\summarization_skill\all_parts\الطحاوية_أجزاء" -c
 ```
 
 ### 7.4 سير العمل الكامل لتلخيص نص طويل
-1. **التقسيم**: `python split_text.py input.txt` → ملفات مرقمة + metadata.json.
+1. **التقسيم**: `python .agents/skills/summarization_skill/scripts/split_text.py input.txt` ← ملفات مرقمة + metadata.json.
 2. **التلقيم بالترتيب**: فتح كل ملف جزء بالترتيب (part_01، ثم part_02، إلخ) ولصق محتواه كاملاً (بما فيه الـ Prompt) في محادثة النموذج اللغوي المفعَّلة فيها مهارة التلخيص.
 3. **حفظ التلخيصات**: حفظ تلخيص كل جزء في ملف بنفس الاسم (part_01.md، part_02.md...) في مجلد المخرجات.
-4. **الدمج**: `python compile_summaries.py <مجلد_الأجزاء> -c` → ملف الملخص المدمج في مجلد `summaries` بالمهارة.
+4. **الدمج**: `python .agents/skills/summarization_skill/scripts/compile_summaries.py <مجلد_الأجزاء> -c` → ملف الملخص المدمج في مجلد `summaries` بالمهارة.
 
 ### 7.5 ملاحظات مهمة
 - إذا كان النص ضمن السعة الفعالة (أقل من 1000 كلمة)، يُخرج السكربت ملفاً واحداً مع الـ Prompt دون تقسيم.
@@ -248,7 +253,7 @@ python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحا�
 
 1. **عند استقبال نص يتجاوز السعة (1000 كلمة)**: نبّه المستخدم فوراً بعبارة التنبيه المنصوص عليها في (7.1)، وأرشده إلى تشغيل سكربت التقسيم بالأمر:
    ```
-   python split_text.py "مسار_الملف"
+   python .agents/skills/summarization_skill/scripts/split_text.py "مسار_الملف"
    ```
 
 2. **عند استقبال جزء يحمل عبارة `[تعليمات التلخيص - الجزء X من Y]`**: اعلم أن هذا جزء من نص مقسم. طبّق المهارة عليه مع مراعاة:
@@ -258,7 +263,7 @@ python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحا�
 
 3. **عند الانتهاء من تلخيص الجزء الأخير**: نبّه المستخدم تلقائياً بأن يدمج الأجزاء باستخدام السكربت الموحد بالأمر:
    ```
-   python compile_summaries.py "مجلد_الأجزاء" -c
+   python .agents/skills/summarization_skill/scripts/compile_summaries.py "مجلد_الأجزاء" -c
    ```
    وذكّره بأن السكربت يحذف تعليمات الـ Prompt تلقائياً ويُخرج ملف الملخص المدمج بصيغة `{اسم_الملف_الأصلي}_summary.md` في مجلد `summaries` بمجلد المهارة.
 
@@ -270,18 +275,18 @@ python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحا�
 1. **إنشاء ملف المدخلات**: إذا كان النص ملصقاً في الدردشة مباشرة (وليس رابطاً)، فاحفظه في ملف مؤقت باسم `temp_to_split.txt` في مجلد المهارة (مساحة العمل)، **بشرطِ ألا يكونَ النصُّ مبتوراً (أي لا يحتوي على وسم `truncated`)**؛ فإنْ كانَ مبتوراً فامتنعْ فوراً واطلبِ المسارَ المحليَّ للملفِّ الأصليِّ واقرأْهُ بأداتِكَ مباشرةً. أما إن كان مسار ملف محلياً من البداية، فاستخدمه مباشرة.
 2. **التقسيم التلقائي**: تحقق أولاً ممّا إذا كان مجلد الأجزاء (المسمى باسم الملف الأصلي داخل مجلد `all_parts`) موجوداً بالفعل ويحتوي على ملفات الأجزاء المقسمة وملف `metadata.json` المكتمل. فإذا وُجِد، فتخطّ خطوة تشغيل أمر التقسيم فوراً لتوفير الوقت وتفادي قيود الصلاحيات والأذونات، وانتقل مباشرة للخطوة التالية. أما إن لم يكن موجوداً، فشغّل سكربت `split_text.py` لتقسيمه تلقائياً:
    ```bash
-   python split_text.py "مسار_الملف"
+   python .agents/skills/summarization_skill/scripts/split_text.py "مسار_الملف"
    ```
 3. **التلخيص التتابعي**: اقرأ كل جزء ناتج من الأجزاء بالترتيب المكتوب في `metadata.json` (مع قراءة مساره بضمه لمجلد الأجزاء داخل `all_parts` في مجلد المهارة)، وطبّق عليه مهارة التلخيص بالكامل، ثم اكتب ملخص كل جزء في ملف مستقل باسم `*_part_NN_summary.md` في نفس مجلد الأجزاء.
 4. **الدمج النهائي**: تحقق أولاً من اكتمال أرقام ملفات الأجزاء الملخصة وتجنب وجود أي فجوات، ثم شغّل سكربت `compile_summaries.py` لدمج ملخصات الأجزاء تلقائياً وحفظها في مجلد `summaries` داخل مجلد المهارة:
    ```bash
-   python compile_summaries.py "مجلد_الأجزاء" -c
+   python .agents/skills/summarization_skill/scripts/compile_summaries.py "مجلد_الأجزاء" -c
    ```
 5. **المراجعة والتحقق النهائي (Coherence & Quality Audit)**: اقرأ ملف التلخيص المدمج كاملاً بعد انتهاء الدمج للتأكد من تماسكه بنيوياً، وصحة أسلوبه وجزالته، ومطابقته التامة لجميع الضوابط الهيكلية واللغوية والمنهجية المنصوص عليها في هذا الدليل (مثل خلوه من الحشو والرموز التعبيرية، وصحة البسملة والعناوين)، وأجرِ أي تعديل أو تهذيب لازم فوراً قبل التسليم.
 6. **التسليم والتنظيف**: قدّم المخرج النهائي المراجع للمستخدم (الذي سيحمل اسم العنوان الرئيسي للتلخيص تلقائياً)، ثم احذف الملفات المؤقتة والوسيطة التي استخدمتها للتقسيم لتبقى مساحة العمل نظيفة.
 
 ### 7.8 بروتوكول معالجة المجلدات والملفات المتعددة بالتوازي (Parallel Batch Folder Processing Protocol)
-عند تزويدك بمسار مجلد يحتوي على عدة ملفات، يتعين عليك اتباع الخطوات التالية تلقائياً لمعالجتها بالتوازي عبر الوكلاء الفرعيين (Subagents):
+عند تزويدك بمسار مجلد يحتوي على عدة ملفات, يتعين عليك اتباع الخطوات التالية تلقائياً لمعالجتها بالتوازي عبر الوكلاء الفرعيين (Subagents):
 1. **فرز الملفات ونطاق البحث**:
    - الاقتصار على فرز وتلخيص الملفات ذات الامتدادات القياسية النصية (`.txt` و `.md`) فقط.
    - الافتراضي هو حصر المعالجة في الملفات المباشرة الموجودة في ظاهر المجلد (مستوى واحد) وتجاهل المجلدات الفرعية.
@@ -311,9 +316,9 @@ python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحا�
 ### 7.9 بروتوكول معالجة روابط وقوائم تشغيل اليوتيوب (YouTube Integration Protocol)
 عند تزويدك برابط يوتيوب لمقطع مفرد أو قائمة تشغيل كاملة، يتعين عليك أتمتة جلب وتجهيز النص كالتالي:
 1. **استخلاص النصوص وتحديد المخرج**:
-   شغّل السكربت `youtube_converter.py` المودع في مسار `E:\GitHub\youtube transcript\youtube_converter.py` على الرابط مع توجيه المخرج إلى مجلد `transcript/` داخل مجلد المهارة (مسار كامل: `E:\GitHub\summarization_skill\transcript`) باستخدام الأمر:
+   شغّل السكربت `youtube_converter.py` المودع في مسار `E:\GitHub\youtube transcript\youtube_converter.py` على الرابط مع توجيه المخرج إلى مجلد `transcript/` داخل مجلد المهارة (مسار كامل: `E:\GitHub\my workflows\summarization_skill\transcript`) باستخدام الأمر:
    ```bash
-   python "E:\GitHub\youtube transcript\youtube_converter.py" -i "<رابط_اليوتيوب_أو_قائمة_التشغيل>" -o "E:\GitHub\summarization_skill\transcript" -l ar
+   python "E:\GitHub\youtube transcript\youtube_converter.py" -i "<رابط_اليوتيوب_أو_قائمة_التشغيل>" -o "E:\GitHub\my workflows\summarization_skill\transcript" -l ar
    ```
 2. **التعامل مع قوائم التشغيل الكاملة**:
    - يقوم تطبيق يوتيوب تلقائياً باستخراج النص لكل مقطع داخل قائمة التشغيل في ملف مستقل بصيغة Markdown وحفظها جميعاً في مجلد `transcript/`.
@@ -326,7 +331,7 @@ python compile_summaries.py "e:\GitHub\summarization_skill\all_parts\الطحا�
 ## 8. قائمة المراجعة الذاتية (Self-Check)
 قبل تسليم أي تلخيص، تحقق من استيفاء كل بند من البنود الآتية:
 
-1. **البسملة**: هل بدأ التلخيص بـ `بسم الله الرحمن الرحيم.` في السطر الأول؟
+1. **البسملة**: هل بدأ التلخيص بـ `بسم الله الرحمن الرحيم.` في السطر الأول scene؟
 2. **العنوان الرئيسي**: هل كُتب في السطر الثاني بالصيغة المطلوبة (شرح/كتاب)؟
 3. **الهيكل البصري**: هل العناوين الفرعية مزاحة بـ Tab؟ هل الفوائد مسبوقة بـ `•`؟ هل التفريعات مرقمة بـ `1-`، `2-`...؟
 4. **استقلالية الأسطر**: هل كل جملة تنتهي بنقطة (.) يليها سطر جديد فوراً؟ هل توجد جملتان في سطر واحد بعد نقطة؟
