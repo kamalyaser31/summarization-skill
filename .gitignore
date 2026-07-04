@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 test_run_temp/
+all_parts/
+summaries/
+transcript/
