@@ -60,7 +60,15 @@
 
 ---
 
-## القائم على المشروع
+## بيانات المطور (Developer Details)
 
-- **إعداد وتطوير**: كمال إبراهيم كمال محمد (كمال ياسر)
-- **المستودع**: [github.com/kamalyaser31/summarization-skill](https://github.com/kamalyaser31/summarization-skill)
+- **المطور:** كمال ياسر (Kamal Yaser)
+- **البريد الإلكتروني:** [kamalyaser31@gmail.com](mailto:kamalyaser31@gmail.com)
+- **تيليجرام:** [@kamalyaser31](https://t.me/kamalyaser31)
+- **المستودع:** [https://github.com/kamalyaser31/summarization-skill](https://github.com/kamalyaser31/summarization-skill)
+
+---
+
+## رخصة الاستخدام (License)
+
+يخضع هذا المشروع لشروط رخصة [MIT License](LICENSE) مفتوحة المصدر.
