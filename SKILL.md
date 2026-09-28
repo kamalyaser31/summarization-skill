@@ -1,7 +1,13 @@
 ---
-name: summarization_skill
-description: تلخيص النصوص الطويلة ومحاكاة الأسلوب وتجميع فصول الكتب بدقة وإيجاز
-disable-model-invocation: true
+name: summarization-skill
+description: تلخيص وتقييد الشروح والمحاضرات العلمية المسموعة والمكتوبة وفق معايير الأمانة الصارمة ونفي الاستدعاء الخارجي. يُستدعى عند طلب تلخيص محاضرة، شرح، درس، كتاب، تفريغ صوتي، أو تجميع أجزاء ملخصة. Summarizes and condenses scholarly lectures and texts with zero hallucination and structured headings. Trigger on summarization, condensing lectures, books, or transcripts.
+license: MIT
+compatibility: Requires Python 3.10+ (Standard Library only, Zero Dependencies)
+metadata:
+  author: kamalyaser31
+  version: "1.0.0"
+  repository: "https://github.com/kamalyaser31/summarization-skill"
+  disable-model-invocation: "true"
 ---
 
 # مهارة التلخيص والمحاكاة الأسلوبية (Summarization Skill)
@@ -111,7 +117,7 @@ disable-model-invocation: true
 ### 7.2 سكربت التقسيم التلقائي (split_text.py)
 يوجد السكربت في مسار:
 ```bash
-python skills/summarization_skill/.agents/skills/summarization_skill/scripts/split_text.py <input_file> [options]
+python scripts/split_text.py <input_file> [options]
 ```
 
 **أهم الخيارات**:
@@ -124,7 +130,7 @@ python skills/summarization_skill/.agents/skills/summarization_skill/scripts/spl
 ### 7.3 سكربت دمج أجزاء التلخيصات (compile_summaries.py)
 يُستخدم السكربت لدمج أجزاء التلخيصات وتطهير البسملة والعناوين المكررة والبرومبتات:
 ```bash
-python skills/summarization_skill/.agents/skills/summarization_skill/scripts/compile_summaries.py <input_dir> [options]
+python scripts/compile_summaries.py <input_dir> [options]
 ```
 
 **خيارات السكربت**:

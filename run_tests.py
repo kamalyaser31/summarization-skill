@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
-SCRIPTS_DIR = BASE_DIR / ".agents" / "skills" / "summarization_skill" / "scripts"
+SCRIPTS_DIR = BASE_DIR / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import compile_summaries as cs  # noqa: E402
